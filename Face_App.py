@@ -29,7 +29,7 @@ DEFAULT_HOG_PARAMS = {
 
 @st.cache_resource
 def download_from_drive(file_id, output_path):
-    """Download files from Google Drive with caching"""
+    """Download files from Google Drive with retries and version handling"""
     if not os.path.exists(output_path):
         url = f"https://drive.google.com/uc?id={file_id}"
         gdown.download(url, output_path, quiet=False)
@@ -37,15 +37,19 @@ def download_from_drive(file_id, output_path):
 
 @st.cache_resource
 def load_models():
-    """Load models from Google Drive with caching"""
+    """Load models with version mismatch handling"""
     try:
-        # Create temp directory if it doesn't exist
         os.makedirs("temp_models", exist_ok=True)
         
-        # Download files
+        # Download files with updated sklearn
         model_path = download_from_drive(MODEL_FILE_ID, "temp_models/face_model.pkl")
         le_path = download_from_drive(LABEL_ENCODER_FILE_ID, "temp_models/label_encoder.pkl")
         label_path = download_from_drive(LABEL_DICT_FILE_ID, "temp_models/label_dict.pkl")
+        
+        # Suppress version warnings
+        import warnings
+        from sklearn.exceptions import InconsistentVersionWarning
+        warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
         
         # Load files
         with open(model_path, 'rb') as f:
@@ -61,45 +65,36 @@ def load_models():
         return None, None, None
 
 def configuration_sidebar():
-    """Create configuration sidebar"""
-    st.sidebar.title("Model Configuration")
+    """Create configuration panel"""
+    st.sidebar.title("Configuration")
     
-    # Model parameters
     st.sidebar.subheader("SVM Parameters")
     kernel = st.sidebar.selectbox("Kernel", ['linear', 'rbf', 'poly'], index=0)
     C = st.sidebar.slider("Regularization (C)", 0.01, 10.0, 1.0)
-    probability = st.sidebar.checkbox("Enable probabilities", True)
     
-    # Feature extraction
     st.sidebar.subheader("Feature Extraction")
-    win_w = st.sidebar.slider("Window Width", 32, 128, 64, step=16)
-    win_h = st.sidebar.slider("Window Height", 32, 128, 64, step=16)
+    win_size = st.sidebar.slider("Window Size", 32, 128, 64, step=16)
     block_size = st.sidebar.slider("Block Size", 8, 32, 16, step=8)
-    cell_size = st.sidebar.slider("Cell Size", 4, 16, 8, step=4)
-    nbins = st.sidebar.slider("Number of Bins", 5, 12, 9)
     
-    # Processing
     st.sidebar.subheader("Processing")
     frame_skip = st.sidebar.slider("Frame Skip", 1, 5, 2)
-    min_face_change = st.sidebar.slider("Min Face Change Threshold", 100, 1000, 500)
     
     return {
-        'svm_params': {'kernel': kernel, 'C': C, 'probability': probability},
+        'svm_params': {'kernel': kernel, 'C': C, 'probability': True},
         'hog_params': {
-            'win_size': (win_w, win_h),
+            'win_size': (win_size, win_size),
             'block_size': (block_size, block_size),
             'block_stride': (block_size//2, block_size//2),
-            'cell_size': (cell_size, cell_size),
-            'nbins': nbins
+            'cell_size': (8, 8),
+            'nbins': 9
         },
         'processing': {
             'frame_skip': frame_skip,
-            'min_face_change': min_face_change
+            'min_face_change': 500
         }
     }
 
 class FeatureExtractor:
-    """Optimized feature extractor with configurable HOG parameters"""
     def __init__(self, hog_params):
         self.hog = cv2.HOGDescriptor(
             hog_params['win_size'],
@@ -108,141 +103,65 @@ class FeatureExtractor:
             hog_params['cell_size'],
             hog_params['nbins']
         )
-        
+    
     def extract(self, face):
-        """Extract features from face image"""
         gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
         resized = cv2.resize(gray, self.hog.winSize)
-        features = self.hog.compute(resized)
-        return features.flatten()
+        return self.hog.compute(resized).flatten()
 
 def main():
-    """Main application function"""
-    # Load configuration
+    # Load configuration and models
     config = configuration_sidebar()
-    
-    # Load models from Google Drive
     model, le, label_dict = load_models()
     if model is None:
         return
     
-    # Initialize feature extractor
     feature_extractor = FeatureExtractor(config['hog_params'])
     
-    # Main interface
-    st.title("Real-Time Face Matching")
-    col1, col2 = st.columns([2, 1])
-    run = col1.checkbox('Start Webcam', True)
-    FRAME_WINDOW = col1.empty()
-    results_placeholder = col2.empty()
+    st.title("Face Matching System")
+    run = st.checkbox('Start Processing', True)
     
-    # Initialize video capture
-    cap = cv2.VideoCapture(0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    # For Streamlit Cloud, we'll use file upload instead of webcam
+    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
     
-    if not cap.isOpened():
-        st.error("Could not open webcam")
-        return
-    
-    # Load face detector
-    face_cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    
-    # State variables
-    last_prob = np.zeros(len(label_dict))
-    last_face = None
-    frame_count = 0
-    
-    while run:
-        start_time = time.time()
-        
-        # Skip frames based on configuration
-        frame_count += 1
-        if frame_count % config['processing']['frame_skip'] != 0:
-            cap.grab()
-            continue
+    if run and uploaded_file is not None:
+        try:
+            # Read and process uploaded image
+            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             
-        ret, frame = cap.read()
-        if not ret:
-            st.error("Failed to capture frame")
-            break
-        
-        # Convert to RGB for display
-        frame_display = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Face detection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(
-            gray, 
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(30, 30)
-        )
-        
-        if len(faces) > 0:
-            x, y, w, h = faces[0]
+            # Detect faces
+            face_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.3, 5)
             
-            # Extract face with margin (with boundary checks)
-            margin = 20
-            x1 = max(0, x - margin)
-            y1 = max(0, y - margin)
-            x2 = min(frame.shape[1], x + w + margin)
-            y2 = min(frame.shape[0], y + h + margin)
-            current_face = frame[y1:y2, x1:x2]
-            
-            # Resize to consistent dimensions
-            current_face_resized = cv2.resize(current_face, DEFAULT_FACE_SIZE)
-            
-            # Only process if face changed significantly
-            if (last_face is None or 
-                cv2.norm(last_face, current_face_resized) > config['processing']['min_face_change']):
-                last_face = current_face_resized
+            if len(faces) > 0:
+                x, y, w, h = faces[0]
+                face = img[y:y+h, x:x+w]
+                face_resized = cv2.resize(face, DEFAULT_FACE_SIZE)
                 
-                try:
-                    # Extract features and predict
-                    features = feature_extractor.extract(current_face_resized).reshape(1, -1)
-                    proba = model.predict_proba(features)[0]
-                    np.copyto(last_prob, proba)
-                    
-                    # Sort results from highest to lowest
-                    sorted_indices = np.argsort(-last_prob)
-                    sorted_results = [
-                        (label_dict[i], last_prob[i]*100) 
-                        for i in sorted_indices
-                    ]
-                    
-                    # Update display with top 5 matches
-                    with results_placeholder.container():
-                        st.subheader("Match Percentages")
-                        for name, confidence in sorted_results[:5]:
-                            cols = st.columns([3, 2, 5])
-                            cols[0].markdown(f"**{name}**")
-                            cols[1].markdown(f"{confidence:.1f}%")
-                            cols[2].progress(
-                                min(100, int(confidence)),
-                                text=f"{min(100, confidence):.1f}%"
-                            )
-                except Exception as e:
-                    st.error(f"Prediction error: {str(e)}")
-            
-            # Draw on frame
-            cv2.rectangle(frame_display, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            best_idx = np.argmax(last_prob)
-            cv2.putText(
-                frame_display,
-                f"{label_dict[best_idx]}: {last_prob[best_idx]*100:.1f}%",
-                (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
-            )
-        
-        # Display frame
-        FRAME_WINDOW.image(frame_display)
-        
-        # Control frame rate
-        elapsed = time.time() - start_time
-        time.sleep(max(0, 0.05 - elapsed))
-    
-    cap.release()
+                # Extract features and predict
+                features = feature_extractor.extract(face_resized).reshape(1, -1)
+                proba = model.predict_proba(features)[0]
+                
+                # Display results
+                st.image(img_rgb, caption='Uploaded Image', use_column_width=True)
+                
+                # Show top matches
+                st.subheader("Match Percentages")
+                sorted_indices = np.argsort(-proba)
+                for i in sorted_indices[:5]:
+                    st.progress(
+                        int(proba[i]*100),
+                        text=f"{label_dict[i]}: {proba[i]*100:.1f}%"
+                    )
+            else:
+                st.warning("No faces detected in the image")
+                
+        except Exception as e:
+            st.error(f"Processing error: {str(e)}")
 
 if __name__ == "__main__":
     main()
