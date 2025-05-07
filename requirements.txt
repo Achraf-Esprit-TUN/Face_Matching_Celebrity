@@ -1,5 +1,5 @@
 streamlit
-opencv-python
-deepface
+opencv-python-headless
 numpy
+pickle5
 Pillow
