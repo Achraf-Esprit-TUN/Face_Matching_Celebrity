@@ -3,8 +3,16 @@ import numpy as np
 import pickle
 import streamlit as st
 import time
+import gdown
+import os
+from collections import deque
 from sklearn.svm import SVC
 from sklearn.preprocessing import LabelEncoder
+
+# Google Drive file IDs (replace with your actual file IDs)
+MODEL_FILE_ID = "16vjqOa4HxbPS3LcqjzXyQgZHZ7GWcfGe"
+LABEL_ENCODER_FILE_ID = "1EgoI9SCkKBfbUzqmq44FtB1x7kAkP2uF"
+LABEL_DICT_FILE_ID = "1ZRxuwvSQf8ErNcGURGUaC-uwN__HOETv"
 
 # Set page config
 st.set_page_config(page_title="Face Matching System", layout="wide")
@@ -19,8 +27,41 @@ DEFAULT_HOG_PARAMS = {
     'nbins': 9
 }
 
-# Configuration sidebar
+@st.cache_resource
+def download_from_drive(file_id, output_path):
+    """Download files from Google Drive with caching"""
+    if not os.path.exists(output_path):
+        url = f"https://drive.google.com/uc?id={file_id}"
+        gdown.download(url, output_path, quiet=False)
+    return output_path
+
+@st.cache_resource
+def load_models():
+    """Load models from Google Drive with caching"""
+    try:
+        # Create temp directory if it doesn't exist
+        os.makedirs("temp_models", exist_ok=True)
+        
+        # Download files
+        model_path = download_from_drive(MODEL_FILE_ID, "temp_models/face_model.pkl")
+        le_path = download_from_drive(LABEL_ENCODER_FILE_ID, "temp_models/label_encoder.pkl")
+        label_path = download_from_drive(LABEL_DICT_FILE_ID, "temp_models/label_dict.pkl")
+        
+        # Load files
+        with open(model_path, 'rb') as f:
+            model = pickle.load(f)
+        with open(le_path, 'rb') as f:
+            le = pickle.load(f)
+        with open(label_path, 'rb') as f:
+            label_dict = pickle.load(f)
+            
+        return model, le, label_dict
+    except Exception as e:
+        st.error(f"Error loading models: {str(e)}")
+        return None, None, None
+
 def configuration_sidebar():
+    """Create configuration sidebar"""
     st.sidebar.title("Model Configuration")
     
     # Model parameters
@@ -57,26 +98,8 @@ def configuration_sidebar():
         }
     }
 
-# Load or create model
-def setup_model(config, label_dict):
-    try:
-        # Try to load existing model
-        with open('models/face_model.pkl', 'rb') as f:
-            model = pickle.load(f)
-        
-        # Verify model compatibility with current config
-        if (model.kernel != config['svm_params']['kernel'] or 
-            model.probability != config['svm_params']['probability']):
-            st.warning("Loaded model doesn't match current configuration. Creating new model.")
-            raise Exception("Configuration mismatch")
-            
-        return model
-    except:
-        # Create new model with current configuration
-        return SVC(**config['svm_params'])
-
-# Feature extractor class
 class FeatureExtractor:
+    """Optimized feature extractor with configurable HOG parameters"""
     def __init__(self, hog_params):
         self.hog = cv2.HOGDescriptor(
             hog_params['win_size'],
@@ -85,37 +108,25 @@ class FeatureExtractor:
             hog_params['cell_size'],
             hog_params['nbins']
         )
-        self.feature_length = self._calculate_feature_length(hog_params)
         
-    def _calculate_feature_length(self, params):
-        # Calculate expected feature vector length
-        cells_per_block = (params['block_size'][0] // params['cell_size'][0]) ** 2
-        blocks_per_window = ((params['win_size'][0] - params['block_size'][0]) // 
-                           (params['block_stride'][0]) + 1) ** 2
-        return cells_per_block * blocks_per_window * params['nbins']
-    
     def extract(self, face):
+        """Extract features from face image"""
         gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
         resized = cv2.resize(gray, self.hog.winSize)
         features = self.hog.compute(resized)
         return features.flatten()
 
 def main():
+    """Main application function"""
     # Load configuration
     config = configuration_sidebar()
     
-    # Load label information
-    try:
-        with open('models/label_encoder.pkl', 'rb') as f:
-            le = pickle.load(f)
-        with open('models/label_dict.pkl', 'rb') as f:
-            label_dict = pickle.load(f)
-    except Exception as e:
-        st.error(f"Error loading label data: {str(e)}")
+    # Load models from Google Drive
+    model, le, label_dict = load_models()
+    if model is None:
         return
     
-    # Setup model and feature extractor
-    model = setup_model(config, label_dict)
+    # Initialize feature extractor
     feature_extractor = FeatureExtractor(config['hog_params'])
     
     # Main interface
@@ -125,7 +136,7 @@ def main():
     FRAME_WINDOW = col1.empty()
     results_placeholder = col2.empty()
     
-    # Video capture
+    # Initialize video capture
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -134,7 +145,7 @@ def main():
         st.error("Could not open webcam")
         return
     
-    # Face detection
+    # Load face detector
     face_cascade = cv2.CascadeClassifier(
         cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     
@@ -172,13 +183,15 @@ def main():
         if len(faces) > 0:
             x, y, w, h = faces[0]
             
-            # Extract face with margin
+            # Extract face with margin (with boundary checks)
             margin = 20
             x1 = max(0, x - margin)
             y1 = max(0, y - margin)
             x2 = min(frame.shape[1], x + w + margin)
             y2 = min(frame.shape[0], y + h + margin)
             current_face = frame[y1:y2, x1:x2]
+            
+            # Resize to consistent dimensions
             current_face_resized = cv2.resize(current_face, DEFAULT_FACE_SIZE)
             
             # Only process if face changed significantly
@@ -192,14 +205,14 @@ def main():
                     proba = model.predict_proba(features)[0]
                     np.copyto(last_prob, proba)
                     
-                    # Sort results
+                    # Sort results from highest to lowest
                     sorted_indices = np.argsort(-last_prob)
                     sorted_results = [
                         (label_dict[i], last_prob[i]*100) 
                         for i in sorted_indices
                     ]
                     
-                    # Update display
+                    # Update display with top 5 matches
                     with results_placeholder.container():
                         st.subheader("Match Percentages")
                         for name, confidence in sorted_results[:5]:
