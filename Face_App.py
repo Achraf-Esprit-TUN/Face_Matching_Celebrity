@@ -162,7 +162,6 @@ class VideoProcessor:
             minNeighbors=5,
             minSize=(30, 30)
         )
-        
         if len(faces) > 0:
             x, y, w, h = faces[0]
             
@@ -186,16 +185,21 @@ class VideoProcessor:
                     proba = self.model.predict_proba(features)[0]
                     self.last_prob = proba
                     
-                    # Update results in session state
+                    # Always update results regardless of confidence
                     sorted_indices = np.argsort(-proba)
                     sorted_results = [
                         (self.label_dict[i], proba[i]*100) 
                         for i in sorted_indices
                     ]
                     st.session_state['match_results'] = sorted_results
-                    st.session_state['last_update'] = time.time()
+                    
+                    # Debug info
+                    print(f"Found matches: {len(sorted_results)}")
+                    print(f"Top match: {sorted_results[0] if sorted_results else 'None'}")
+                    
                 except Exception as e:
                     st.error(f"Prediction error: {str(e)}")
+                    print(f"Exception in prediction: {str(e)}")
             
             # Draw on frame
             if self.last_prob is not None:
@@ -209,38 +213,17 @@ class VideoProcessor:
         
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-def display_results():
-    """Display the match results in the right column"""
-    if 'match_results' not in st.session_state:
-        st.session_state['match_results'] = []
-    
-    with st.container():
-        st.subheader("Top 5 Matches")
-        
-        # If we have results, show them
-        if st.session_state['match_results']:
-            for name, confidence in st.session_state['match_results'][:5]:
-                cols = st.columns([3, 2, 5])
-                cols[0].markdown(f"**{name}**")
-                cols[1].markdown(f"{confidence:.1f}%")
-                cols[2].progress(
-                    min(100, int(confidence)),
-                    text=f"{min(100, confidence):.1f}%"
-                )
-        else:
-            # Show placeholders if no results yet
-            for i in range(5):
-                cols = st.columns([3, 2, 5])
-                cols[0].markdown("**-**")
-                cols[1].markdown("0.0%")
-                cols[2].progress(0, text="0.0%")
-
 def main():
     # Load configuration and models
     config = configuration_sidebar()
     model, le, label_dict = load_models()
     if model is None:
+        st.error("Failed to load models. Please check your internet connection.")
         return
+    
+    # Add debug info
+    st.sidebar.write(f"Model loaded: {type(model).__name__}")
+    st.sidebar.write(f"Number of classes: {len(label_dict)}")
     
     feature_extractor = FeatureExtractor(config['hog_params'])
     
@@ -269,15 +252,25 @@ def main():
             async_processing=True,
         )
     
-    with col2:
-        # Continuously update results display
-        while True:
-            display_results()
-            time.sleep(0.1)  # Small delay to prevent high CPU usage
+        with col2:
+            # Results display container
+            st.subheader("Top 5 Matches")
             
-            # Break if streamer is stopped
-            if not webrtc_ctx or not webrtc_ctx.state.playing:
-                break
+            if webrtc_ctx and webrtc_ctx.state.playing and 'match_results' in st.session_state:
+                results = st.session_state.get('match_results', [])
+                if results:
+                    for i, (name, confidence) in enumerate(results[:5]):
+                        cols = st.columns([3, 2, 5])
+                        cols[0].markdown(f"**{name}**")
+                        cols[1].markdown(f"{confidence:.1f}%")
+                        cols[2].progress(min(100, int(confidence)), text=f"{min(100, confidence):.1f}%")
+                else:
+                    st.info("No faces matched yet. Please wait...")
+                    
+            # Auto-rerun every second instead of continuous loop
+            time.sleep(1)
+            
+            
 
 if __name__ == "__main__":
     main()
