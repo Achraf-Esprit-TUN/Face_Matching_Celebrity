@@ -252,26 +252,20 @@ def main():
             async_processing=True,
         )
     
-    with col2:
-        # Results display container
-        st.subheader("Top 5 Matches")
-        
-        if webrtc_ctx and webrtc_ctx.state.playing:
-            results = st.session_state.get('match_results', [])
-            if results:
-                for i, (name, confidence) in enumerate(results[:5]):
-                    cols = st.columns([3, 2, 5])
-                    cols[0].markdown(f"**{name}**")
-                    cols[1].markdown(f"{confidence:.1f}%")
-                    cols[2].progress(max(0.1, min(100, confidence)), text=f"{confidence:.1f}%")
-            else:
-                # If no results yet, show placeholder with actual celebrity names
-                sample_names = list(label_dict.values())[:5] if label_dict else [f"Celebrity {i+1}" for i in range(5)]
-                for i, (name, confidence) in enumerate(sample_names):
-                    cols = st.columns([3, 2, 5])
-                    cols[0].markdown(f"**{name}**")
-                    cols[1].markdown(f"{confidence:.1f}%")
-                    cols[2].progress(max(0.1, min(100, confidence)), text=f"{confidence:.1f}%")
+        with col2:
+            # Results display container
+            st.subheader("Top 5 Matches")
+            
+            if webrtc_ctx and webrtc_ctx.state.playing and 'match_results' in st.session_state:
+                results = st.session_state.get('match_results', [])
+                if results:
+                    for i, (name, confidence) in enumerate(results[:5]):
+                        cols = st.columns([3, 2, 5])
+                        cols[0].markdown(f"**{name}**")
+                        cols[1].markdown(f"{confidence:.1f}%")
+                        cols[2].progress(min(100, int(confidence)), text=f"{min(100, confidence):.1f}%")
+                else:
+                    st.info("No faces matched yet. Please wait...")
                     
             # Auto-rerun every second instead of continuous loop
             time.sleep(1)
