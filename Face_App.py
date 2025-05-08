@@ -254,19 +254,58 @@ def main():
     
         with col2:
             # Results display container
-            st.subheader("Top 5 Matches")
+            show_all = st.checkbox("Show all celebrities", value=False)
             
-            if webrtc_ctx and webrtc_ctx.state.playing and 'match_results' in st.session_state:
+            if show_all:
+                st.subheader("All Matches")
+            else:
+                st.subheader("Top 5 Matches")
+            
+            if webrtc_ctx and webrtc_ctx.state.playing:
                 results = st.session_state.get('match_results', [])
-                if results:
-                    for i, (name, confidence) in enumerate(results[:5]):
-                        cols = st.columns([3, 2, 5])
-                        cols[0].markdown(f"**{name}**")
-                        cols[1].markdown(f"{confidence:.1f}%")
-                        cols[2].progress(min(100, int(confidence)), text=f"{min(100, confidence):.1f}%")
-                else:
-                    st.info("No faces matched yet. Please wait...")
-                    
+                
+                # Create a scrollable container for matches
+                with st.container():
+                    # If we have results, show them
+                    if results:
+                        # Determine how many results to show
+                        display_results = results if show_all else results[:5]
+                        
+                        # Create a scrollable area with fixed height if showing all
+                        if show_all:
+                            st.write("Scroll to see all matches:")
+                            scroll_area = st.container()
+                            with scroll_area:
+                                for name, confidence in display_results:
+                                    cols = st.columns([3, 2, 5])
+                                    cols[0].markdown(f"**{name}**")
+                                    cols[1].markdown(f"{confidence:.1f}%")
+                                    cols[2].progress(max(0.1, min(100, confidence)), text=f"{confidence:.1f}%")
+                        else:
+                            # Just show top 5
+                            for name, confidence in display_results:
+                                cols = st.columns([3, 2, 5])
+                                cols[0].markdown(f"**{name}**")
+                                cols[1].markdown(f"{confidence:.1f}%")
+                                cols[2].progress(max(0.1, min(100, confidence)), text=f"{confidence:.1f}%")
+                    else:
+                        # If no results yet, show placeholders
+                        if label_dict:
+                            # Determine how many placeholders to show
+                            if show_all:
+                                placeholders = [(idx, name) for idx, name in label_dict.items()]
+                            else:
+                                # Just get first 5 items from label_dict
+                                placeholders = [(idx, name) for idx, name in list(label_dict.items())[:5]]
+                            
+                            for _, name in placeholders:
+                                cols = st.columns([3, 2, 5])
+                                cols[0].markdown(f"**{name}**")
+                                cols[1].markdown("0.0%")
+                                cols[2].progress(0.1, text="0.0%")
+                        else:
+                            st.info("No celebrity data loaded yet.")
+            
             # Auto-rerun every second instead of continuous loop
             time.sleep(1)
             
