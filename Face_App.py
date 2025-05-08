@@ -187,12 +187,12 @@ class VideoProcessor:
                     self.last_prob = proba
                     
                     # Update results in session state
-                    st.session_state['last_prob'] = proba
-                    st.session_state['last_update'] = time.time()
-                    st.session_state['sorted_results'] = [
+                    sorted_indices = np.argsort(-proba)
+                    sorted_results = [
                         (self.label_dict[i], proba[i]*100) 
-                        for i in np.argsort(-proba)
+                        for i in sorted_indices
                     ]
+                    st.session_state['match_results'] = sorted_results
                 except Exception as e:
                     st.error(f"Prediction error: {str(e)}")
             
@@ -220,17 +220,15 @@ def main():
     st.title("Live Face Matching System")
     
     # Initialize session state for results
-    if 'last_prob' not in st.session_state:
-        st.session_state['last_prob'] = None
-        st.session_state['last_update'] = 0
-        st.session_state['sorted_results'] = []
+    if 'match_results' not in st.session_state:
+        st.session_state['match_results'] = []
     
     # Create two columns
     col1, col2 = st.columns([2, 1])
     
     with col1:
         # WebRTC streamer for live video
-        ctx = webrtc_streamer(
+        webrtc_ctx = webrtc_streamer(
             key="example",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
@@ -250,10 +248,10 @@ def main():
         
         # Continuously update results
         while True:
-            if 'sorted_results' in st.session_state and st.session_state['sorted_results']:
+            if 'match_results' in st.session_state and st.session_state['match_results']:
                 with results_placeholder.container():
                     st.subheader("Match Percentages")
-                    for name, confidence in st.session_state['sorted_results'][:5]:
+                    for name, confidence in st.session_state['match_results'][:5]:
                         cols = st.columns([3, 2, 5])
                         cols[0].markdown(f"**{name}**")
                         cols[1].markdown(f"{confidence:.1f}%")
@@ -266,7 +264,7 @@ def main():
             time.sleep(0.1)
             
             # Break if streamer is stopped
-            if not ctx.state.playing:
+            if webrtc_ctx and not webrtc_ctx.state.playing:
                 break
 
 if __name__ == "__main__":
