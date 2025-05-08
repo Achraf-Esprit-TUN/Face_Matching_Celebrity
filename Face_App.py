@@ -8,6 +8,7 @@ import os
 from collections import deque
 from sklearn.svm import SVC
 from sklearn.preprocessing import LabelEncoder
+import streamlit.components.v1 as components
 
 # Google Drive file IDs
 MODEL_FILE_ID = "16vjqOa4HxbPS3LcqjzXyQgZHZ7GWcfGe"
@@ -26,6 +27,22 @@ DEFAULT_HOG_PARAMS = {
     'cell_size': (8, 8),
     'nbins': 9
 }
+
+# Webcam permission HTML
+WEBCAM_HTML = """
+<script>
+async function requestWebcam() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        window.alert("Webcam access granted! Click OK to continue.");
+        return true;
+    } catch (err) {
+        window.alert("Could not access webcam: " + err.message);
+        return false;
+    }
+}
+</script>
+"""
 
 @st.cache_resource
 def download_from_drive(file_id, output_path):
@@ -109,6 +126,14 @@ class FeatureExtractor:
         resized = cv2.resize(gray, self.hog.winSize)
         return self.hog.compute(resized).flatten()
 
+def request_webcam_permission():
+    """Display webcam permission request"""
+    st.warning("This app requires webcam access to function properly.")
+    if st.button("Allow Webcam Access"):
+        components.html(WEBCAM_HTML, height=0)
+        return True
+    return False
+
 def main():
     # Load configuration and models
     config = configuration_sidebar()
@@ -119,9 +144,14 @@ def main():
     feature_extractor = FeatureExtractor(config['hog_params'])
     
     st.title("Live Face Matching System")
-    run = st.checkbox('Start Webcam', True)
     
-    # Webcam implementation for Streamlit
+    # Request webcam permission
+    if not request_webcam_permission():
+        st.stop()
+    
+    run = st.checkbox('Start Webcam Processing', True)
+    
+    # Webcam implementation
     FRAME_WINDOW = st.empty()
     results_placeholder = st.empty()
     
