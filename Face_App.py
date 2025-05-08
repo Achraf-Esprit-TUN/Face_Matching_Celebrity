@@ -246,24 +246,25 @@ def main():
             async_processing=True,
         )
     
-    with col2:
-        # Results display container
-        st.subheader("Top 5 Matches")
-        
-        if webrtc_ctx and webrtc_ctx.state.playing and 'match_results' in st.session_state:
-            results = st.session_state.get('match_results', [])
-            if results:
-                for i, (name, confidence) in enumerate(results[:5]):
-                    cols = st.columns([3, 2, 5])
-                    cols[0].markdown(f"**{name}**")
-                    cols[1].markdown(f"{confidence:.1f}%")
-                    cols[2].progress(min(100, int(confidence)), text=f"{min(100, confidence):.1f}%")
-            else:
-                st.info("No faces matched yet. Please wait...")
-                
-        # Auto-rerun every second instead of continuous loop
-        time.sleep(1)
-        st.experimental_rerun()
+        with col2:
+            # Results display container
+            st.subheader("Top 5 Matches")
+            
+            if webrtc_ctx and webrtc_ctx.state.playing and 'match_results' in st.session_state:
+                results = st.session_state.get('match_results', [])
+                if results:
+                    for i, (name, confidence) in enumerate(results[:5]):
+                        cols = st.columns([3, 2, 5])
+                        cols[0].markdown(f"**{name}**")
+                        cols[1].markdown(f"{confidence:.1f}%")
+                        cols[2].progress(min(100, int(confidence)), text=f"{min(100, confidence):.1f}%")
+                else:
+                    st.info("No faces matched yet. Please wait...")
+                    
+            # Auto-rerun every second instead of continuous loop
+            time.sleep(1)
+            
+            
 
 if __name__ == "__main__":
     main()
