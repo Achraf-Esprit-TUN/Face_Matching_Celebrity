@@ -71,32 +71,41 @@ def load_models():
         return None, None, None
 
 def configuration_sidebar():
-    """Create configuration panel"""
-    st.sidebar.title("Configuration")
+    """Create configuration panel with all parameters from the old version"""
+    st.sidebar.title("Model Configuration")
     
+    # Model parameters
     st.sidebar.subheader("SVM Parameters")
     kernel = st.sidebar.selectbox("Kernel", ['linear', 'rbf', 'poly'], index=0)
     C = st.sidebar.slider("Regularization (C)", 0.01, 10.0, 1.0)
+    probability = st.sidebar.checkbox("Enable probabilities", True)
     
+    # Feature extraction
     st.sidebar.subheader("Feature Extraction")
-    win_size = st.sidebar.slider("Window Size", 32, 128, 64, step=16)
+    win_w = st.sidebar.slider("Window Width", 32, 128, 64, step=16)
+    win_h = st.sidebar.slider("Window Height", 32, 128, 64, step=16)
     block_size = st.sidebar.slider("Block Size", 8, 32, 16, step=8)
+    block_stride = st.sidebar.slider("Block Stride", 4, 16, 8, step=4)
+    cell_size = st.sidebar.slider("Cell Size", 4, 16, 8, step=4)
+    nbins = st.sidebar.slider("Number of Bins", 5, 12, 9)
     
+    # Processing
     st.sidebar.subheader("Processing")
     frame_skip = st.sidebar.slider("Frame Skip", 1, 5, 2)
+    min_face_change = st.sidebar.slider("Min Face Change Threshold", 100, 1000, 500)
     
     return {
-        'svm_params': {'kernel': kernel, 'C': C, 'probability': True},
+        'svm_params': {'kernel': kernel, 'C': C, 'probability': probability},
         'hog_params': {
-            'win_size': (win_size, win_size),
+            'win_size': (win_w, win_h),
             'block_size': (block_size, block_size),
-            'block_stride': (block_size//2, block_size//2),
-            'cell_size': (8, 8),
-            'nbins': 9
+            'block_stride': (block_stride, block_stride),
+            'cell_size': (cell_size, cell_size),
+            'nbins': nbins
         },
         'processing': {
             'frame_skip': frame_skip,
-            'min_face_change': 500
+            'min_face_change': min_face_change
         }
     }
 
@@ -109,11 +118,20 @@ class FeatureExtractor:
             hog_params['cell_size'],
             hog_params['nbins']
         )
+        self.feature_length = self._calculate_feature_length(hog_params)
+        
+    def _calculate_feature_length(self, params):
+        # Calculate expected feature vector length
+        cells_per_block = (params['block_size'][0] // params['cell_size'][0]) ** 2
+        blocks_per_window = ((params['win_size'][0] - params['block_size'][0]) // 
+                           (params['block_stride'][0]) + 1) ** 2
+        return cells_per_block * blocks_per_window * params['nbins']
     
     def extract(self, face):
         gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
         resized = cv2.resize(gray, self.hog.winSize)
-        return self.hog.compute(resized).flatten()
+        features = self.hog.compute(resized)
+        return features.flatten()
 
 class VideoProcessor:
     def __init__(self, model, le, label_dict, feature_extractor, config):
@@ -125,6 +143,8 @@ class VideoProcessor:
         self.last_prob = None
         self.last_face = None
         self.frame_count = 0
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
     
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -135,10 +155,8 @@ class VideoProcessor:
             return av.VideoFrame.from_ndarray(img, format="bgr24")
         
         # Face detection
-        face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(
+        faces = self.face_cascade.detectMultiScale(
             gray, 
             scaleFactor=1.1,
             minNeighbors=5,
@@ -171,6 +189,10 @@ class VideoProcessor:
                     # Update results in session state
                     st.session_state['last_prob'] = proba
                     st.session_state['last_update'] = time.time()
+                    st.session_state['sorted_results'] = [
+                        (self.label_dict[i], proba[i]*100) 
+                        for i in np.argsort(-proba)
+                    ]
                 except Exception as e:
                     st.error(f"Prediction error: {str(e)}")
             
@@ -180,7 +202,7 @@ class VideoProcessor:
                 cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
                 cv2.putText(
                     img,
-                    f"Best: {self.label_dict[best_idx]} ({self.last_prob[best_idx]*100:.1f}%)",
+                    f"{self.label_dict[best_idx]}: {self.last_prob[best_idx]*100:.1f}%",
                     (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
                 )
         
@@ -201,6 +223,7 @@ def main():
     if 'last_prob' not in st.session_state:
         st.session_state['last_prob'] = None
         st.session_state['last_update'] = 0
+        st.session_state['sorted_results'] = []
     
     # Create two columns
     col1, col2 = st.columns([2, 1])
@@ -227,14 +250,16 @@ def main():
         
         # Continuously update results
         while True:
-            if st.session_state['last_prob'] is not None:
+            if 'sorted_results' in st.session_state and st.session_state['sorted_results']:
                 with results_placeholder.container():
-                    st.subheader("Top Matches")
-                    sorted_indices = np.argsort(-st.session_state['last_prob'])
-                    for i in sorted_indices[:5]:
-                        st.progress(
-                            int(st.session_state['last_prob'][i]*100),
-                            text=f"{label_dict[i]}: {st.session_state['last_prob'][i]*100:.1f}%"
+                    st.subheader("Match Percentages")
+                    for name, confidence in st.session_state['sorted_results'][:5]:
+                        cols = st.columns([3, 2, 5])
+                        cols[0].markdown(f"**{name}**")
+                        cols[1].markdown(f"{confidence:.1f}%")
+                        cols[2].progress(
+                            min(100, int(confidence)),
+                            text=f"{min(100, confidence):.1f}%"
                         )
             
             # Small delay to prevent high CPU usage
