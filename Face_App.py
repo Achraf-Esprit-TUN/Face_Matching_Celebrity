@@ -267,11 +267,11 @@ def main():
             else:
                 # If no results yet, show placeholder with actual celebrity names
                 sample_names = list(label_dict.values())[:5] if label_dict else [f"Celebrity {i+1}" for i in range(5)]
-                for i, name in enumerate(sample_names):
+                for (i, confidence) in enumerate(sample_names):
                     cols = st.columns([3, 2, 5])
                     cols[0].markdown(f"**{name}**")
-                    cols[1].markdown("0.0%")
-                    cols[2].progress(0.1, text="0.0%")
+                    cols[1].markdown(f"{confidence:.1f}%")
+                    cols[2].progress(max(0.1, min(100, confidence)), text=f"{confidence:.1f}%")
                     
             # Auto-rerun every second instead of continuous loop
             time.sleep(1)
