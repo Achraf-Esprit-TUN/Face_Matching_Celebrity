@@ -212,7 +212,12 @@ def main():
     config = configuration_sidebar()
     model, le, label_dict = load_models()
     if model is None:
+        st.error("Failed to load models. Please check your internet connection.")
         return
+    
+    # Add debug info
+    st.sidebar.write(f"Model loaded: {type(model).__name__}")
+    st.sidebar.write(f"Number of classes: {len(label_dict)}")
     
     feature_extractor = FeatureExtractor(config['hog_params'])
     
@@ -243,38 +248,22 @@ def main():
     
     with col2:
         # Results display container
-        results_container = st.container()
+        st.subheader("Top 5 Matches")
         
-        # Display initial empty results
-        with results_container:
-            st.subheader("Top 5 Matches")
-            for i in range(5):
-                cols = st.columns([3, 2, 5])
-                cols[0].markdown("**-**")
-                cols[1].markdown("0.0%")
-                cols[2].progress(0, text="0.0%")
-        
-        # Continuously update results
-        while True:
-            if webrtc_ctx and webrtc_ctx.state.playing:
-                if 'match_results' in st.session_state and st.session_state['match_results']:
-                    with results_container:
-                        st.subheader("Top 5 Matches")
-                        for i, (name, confidence) in enumerate(st.session_state['match_results'][:5]):
-                            cols = st.columns([3, 2, 5])
-                            cols[0].markdown(f"**{name}**")
-                            cols[1].markdown(f"{confidence:.1f}%")
-                            cols[2].progress(
-                                min(100, int(confidence)),
-                                text=f"{min(100, confidence):.1f}%"
-                            )
-            
-            # Small delay to prevent high CPU usage
-            time.sleep(0.1)
-            
-            # Break if streamer is stopped
-            if not webrtc_ctx or not webrtc_ctx.state.playing:
-                break
+        if webrtc_ctx and webrtc_ctx.state.playing and 'match_results' in st.session_state:
+            results = st.session_state.get('match_results', [])
+            if results:
+                for i, (name, confidence) in enumerate(results[:5]):
+                    cols = st.columns([3, 2, 5])
+                    cols[0].markdown(f"**{name}**")
+                    cols[1].markdown(f"{confidence:.1f}%")
+                    cols[2].progress(min(100, int(confidence)), text=f"{min(100, confidence):.1f}%")
+            else:
+                st.info("No faces matched yet. Please wait...")
+                
+        # Auto-rerun every second instead of continuous loop
+        time.sleep(1)
+        st.experimental_rerun()
 
 if __name__ == "__main__":
     main()
