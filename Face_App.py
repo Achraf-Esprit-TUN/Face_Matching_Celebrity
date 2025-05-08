@@ -161,7 +161,7 @@ class VideoProcessor:
             scaleFactor=1.1,
             minNeighbors=5,
             minSize=(30, 30)
-        
+        )
         if len(faces) > 0:
             x, y, w, h = faces[0]
             
