@@ -5,10 +5,10 @@ import streamlit as st
 import time
 import gdown
 import os
-from collections import deque
 from sklearn.svm import SVC
 from sklearn.preprocessing import LabelEncoder
-import streamlit.components.v1 as components
+import av
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 
 # Google Drive file IDs
 MODEL_FILE_ID = "16vjqOa4HxbPS3LcqjzXyQgZHZ7GWcfGe"
@@ -17,6 +17,11 @@ LABEL_DICT_FILE_ID = "1ZRxuwvSQf8ErNcGURGUaC-uwN__HOETv"
 
 # Set page config
 st.set_page_config(page_title="Live Face Matching", layout="wide")
+
+# WebRTC Configuration
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
 
 # Constants
 DEFAULT_FACE_SIZE = (128, 128)
@@ -27,22 +32,6 @@ DEFAULT_HOG_PARAMS = {
     'cell_size': (8, 8),
     'nbins': 9
 }
-
-# Webcam permission HTML
-WEBCAM_HTML = """
-<script>
-async function requestWebcam() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        window.alert("Webcam access granted! Click OK to continue.");
-        return true;
-    } catch (err) {
-        window.alert("Could not access webcam: " + err.message);
-        return false;
-    }
-}
-</script>
-"""
 
 @st.cache_resource
 def download_from_drive(file_id, output_path):
@@ -126,88 +115,29 @@ class FeatureExtractor:
         resized = cv2.resize(gray, self.hog.winSize)
         return self.hog.compute(resized).flatten()
 
-def request_webcam_permission():
-    """Display webcam permission request"""
-    st.warning("This app requires webcam access to function properly.")
-    if st.button("Allow Webcam Access"):
-        components.html(WEBCAM_HTML, height=0)
-        return True
-    return False
-
-def main():
-    # Load configuration and models
-    config = configuration_sidebar()
-    model, le, label_dict = load_models()
-    if model is None:
-        return
+class VideoProcessor:
+    def __init__(self, model, le, label_dict, feature_extractor, config):
+        self.model = model
+        self.le = le
+        self.label_dict = label_dict
+        self.feature_extractor = feature_extractor
+        self.config = config
+        self.last_prob = None
+        self.last_face = None
+        self.frame_count = 0
     
-    feature_extractor = FeatureExtractor(config['hog_params'])
-    
-    st.title("Live Face Matching System")
-    
-    # Request webcam permission
-    if not request_webcam_permission():
-        st.stop()
-    
-    run = st.checkbox('Start Webcam Processing', True)
-    
-    # Webcam implementation
-    FRAME_WINDOW = st.empty()
-    results_placeholder = st.empty()
-    
-    # Try to access webcam
-    try:
-        cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        
-        if not cap.isOpened():
-            st.warning("Could not access webcam directly. Trying alternative methods...")
-            # Try different camera indices
-            for i in range(3):
-                cap = cv2.VideoCapture(i)
-                if cap.isOpened():
-                    break
-            
-            if not cap.isOpened():
-                st.error("Failed to access any webcam. Please check permissions.")
-                return
-    
-    except Exception as e:
-        st.error(f"Webcam access error: {str(e)}")
-        return
-    
-    # Face detection
-    face_cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    
-    # State variables
-    last_prob = np.zeros(len(label_dict))
-    last_face = None
-    frame_count = 0
-    
-    while run:
-        start_time = time.time()
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
         
         # Skip frames based on configuration
-        frame_count += 1
-        if frame_count % config['processing']['frame_skip'] != 0:
-            cap.grab()
-            continue
-            
-        ret, frame = cap.read()
-        if not ret:
-            st.warning("Failed to capture frame. Trying to reconnect...")
-            cap.release()
-            time.sleep(1)
-            cap = cv2.VideoCapture(0)
-            continue
-        
-        # Convert to RGB for display
-        frame_display = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.frame_count += 1
+        if self.frame_count % self.config['processing']['frame_skip'] != 0:
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
         
         # Face detection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(
             gray, 
             scaleFactor=1.1,
@@ -222,51 +152,97 @@ def main():
             margin = 20
             x1 = max(0, x - margin)
             y1 = max(0, y - margin)
-            x2 = min(frame.shape[1], x + w + margin)
-            y2 = min(frame.shape[0], y + h + margin)
-            current_face = frame[y1:y2, x1:x2]
+            x2 = min(img.shape[1], x + w + margin)
+            y2 = min(img.shape[0], y + h + margin)
+            current_face = img[y1:y2, x1:x2]
             current_face_resized = cv2.resize(current_face, DEFAULT_FACE_SIZE)
             
             # Only process if face changed significantly
-            if (last_face is None or 
-                cv2.norm(last_face, current_face_resized) > config['processing']['min_face_change']):
-                last_face = current_face_resized
+            if (self.last_face is None or 
+                cv2.norm(self.last_face, current_face_resized) > self.config['processing']['min_face_change']):
+                self.last_face = current_face_resized
                 
                 try:
                     # Extract features and predict
-                    features = feature_extractor.extract(current_face_resized).reshape(1, -1)
-                    proba = model.predict_proba(features)[0]
-                    np.copyto(last_prob, proba)
+                    features = self.feature_extractor.extract(current_face_resized).reshape(1, -1)
+                    proba = self.model.predict_proba(features)[0]
+                    self.last_prob = proba
                     
-                    # Display results
-                    with results_placeholder.container():
-                        st.subheader("Top Matches")
-                        sorted_indices = np.argsort(-last_prob)
-                        for i in sorted_indices[:5]:
-                            st.progress(
-                                int(last_prob[i]*100),
-                                text=f"{label_dict[i]}: {last_prob[i]*100:.1f}%"
-                            )
+                    # Update results in session state
+                    st.session_state['last_prob'] = proba
+                    st.session_state['last_update'] = time.time()
                 except Exception as e:
                     st.error(f"Prediction error: {str(e)}")
             
             # Draw on frame
-            cv2.rectangle(frame_display, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            best_idx = np.argmax(last_prob)
-            cv2.putText(
-                frame_display,
-                f"Best: {label_dict[best_idx]} ({last_prob[best_idx]*100:.1f}%)",
-                (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
-            )
+            if self.last_prob is not None:
+                best_idx = np.argmax(self.last_prob)
+                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.putText(
+                    img,
+                    f"Best: {self.label_dict[best_idx]} ({self.last_prob[best_idx]*100:.1f}%)",
+                    (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+                )
         
-        # Display frame
-        FRAME_WINDOW.image(frame_display)
-        
-        # Control frame rate
-        elapsed = time.time() - start_time
-        time.sleep(max(0, 0.05 - elapsed))
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+def main():
+    # Load configuration and models
+    config = configuration_sidebar()
+    model, le, label_dict = load_models()
+    if model is None:
+        return
     
-    cap.release()
+    feature_extractor = FeatureExtractor(config['hog_params'])
+    
+    st.title("Live Face Matching System")
+    
+    # Initialize session state for results
+    if 'last_prob' not in st.session_state:
+        st.session_state['last_prob'] = None
+        st.session_state['last_update'] = 0
+    
+    # Create two columns
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # WebRTC streamer for live video
+        ctx = webrtc_streamer(
+            key="example",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTC_CONFIGURATION,
+            video_processor_factory=lambda: VideoProcessor(
+                model, le, label_dict, feature_extractor, config
+            ),
+            media_stream_constraints={
+                "video": True,
+                "audio": False
+            },
+            async_processing=True,
+        )
+    
+    with col2:
+        # Results display
+        results_placeholder = st.empty()
+        
+        # Continuously update results
+        while True:
+            if st.session_state['last_prob'] is not None:
+                with results_placeholder.container():
+                    st.subheader("Top Matches")
+                    sorted_indices = np.argsort(-st.session_state['last_prob'])
+                    for i in sorted_indices[:5]:
+                        st.progress(
+                            int(st.session_state['last_prob'][i]*100),
+                            text=f"{label_dict[i]}: {st.session_state['last_prob'][i]*100:.1f}%"
+                        )
+            
+            # Small delay to prevent high CPU usage
+            time.sleep(0.1)
+            
+            # Break if streamer is stopped
+            if not ctx.state.playing:
+                break
 
 if __name__ == "__main__":
     main()
