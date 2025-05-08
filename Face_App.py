@@ -161,7 +161,6 @@ class VideoProcessor:
             scaleFactor=1.1,
             minNeighbors=5,
             minSize=(30, 30)
-        )
         
         if len(faces) > 0:
             x, y, w, h = faces[0]
@@ -243,28 +242,38 @@ def main():
         )
     
     with col2:
-        # Results display
-        results_placeholder = st.empty()
+        # Results display container
+        results_container = st.container()
+        
+        # Display initial empty results
+        with results_container:
+            st.subheader("Top 5 Matches")
+            for i in range(5):
+                cols = st.columns([3, 2, 5])
+                cols[0].markdown("**-**")
+                cols[1].markdown("0.0%")
+                cols[2].progress(0, text="0.0%")
         
         # Continuously update results
         while True:
-            if 'match_results' in st.session_state and st.session_state['match_results']:
-                with results_placeholder.container():
-                    st.subheader("Match Percentages")
-                    for name, confidence in st.session_state['match_results'][:5]:
-                        cols = st.columns([3, 2, 5])
-                        cols[0].markdown(f"**{name}**")
-                        cols[1].markdown(f"{confidence:.1f}%")
-                        cols[2].progress(
-                            min(100, int(confidence)),
-                            text=f"{min(100, confidence):.1f}%"
-                        )
+            if webrtc_ctx and webrtc_ctx.state.playing:
+                if 'match_results' in st.session_state and st.session_state['match_results']:
+                    with results_container:
+                        st.subheader("Top 5 Matches")
+                        for i, (name, confidence) in enumerate(st.session_state['match_results'][:5]):
+                            cols = st.columns([3, 2, 5])
+                            cols[0].markdown(f"**{name}**")
+                            cols[1].markdown(f"{confidence:.1f}%")
+                            cols[2].progress(
+                                min(100, int(confidence)),
+                                text=f"{min(100, confidence):.1f}%"
+                            )
             
             # Small delay to prevent high CPU usage
             time.sleep(0.1)
             
             # Break if streamer is stopped
-            if webrtc_ctx and not webrtc_ctx.state.playing:
+            if not webrtc_ctx or not webrtc_ctx.state.playing:
                 break
 
 if __name__ == "__main__":
