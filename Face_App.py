@@ -185,15 +185,21 @@ class VideoProcessor:
                     proba = self.model.predict_proba(features)[0]
                     self.last_prob = proba
                     
-                    # Update results in session state
+                    # Always update results regardless of confidence
                     sorted_indices = np.argsort(-proba)
                     sorted_results = [
                         (self.label_dict[i], proba[i]*100) 
                         for i in sorted_indices
                     ]
                     st.session_state['match_results'] = sorted_results
+                    
+                    # Debug info
+                    print(f"Found matches: {len(sorted_results)}")
+                    print(f"Top match: {sorted_results[0] if sorted_results else 'None'}")
+                    
                 except Exception as e:
                     st.error(f"Prediction error: {str(e)}")
+                    print(f"Exception in prediction: {str(e)}")
             
             # Draw on frame
             if self.last_prob is not None:
@@ -259,7 +265,11 @@ def main():
                         cols[1].markdown(f"{confidence:.1f}%")
                         cols[2].progress(min(100, int(confidence)), text=f"{min(100, confidence):.1f}%")
                 else:
-                    st.info("No faces matched yet. Please wait...")
+                    for i in range(5):
+                        cols = st.columns([3, 2, 5])
+                        cols[0].markdown(f"**Celebrity {i+1}**")
+                        cols[1].markdown("0.0%")
+                        cols[2].progress(0.1, text="0.0%")
                     
             # Auto-rerun every second instead of continuous loop
             time.sleep(1)
