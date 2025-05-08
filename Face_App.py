@@ -9,13 +9,13 @@ from collections import deque
 from sklearn.svm import SVC
 from sklearn.preprocessing import LabelEncoder
 
-# Google Drive file IDs (replace with your actual file IDs)
+# Google Drive file IDs
 MODEL_FILE_ID = "16vjqOa4HxbPS3LcqjzXyQgZHZ7GWcfGe"
 LABEL_ENCODER_FILE_ID = "1EgoI9SCkKBfbUzqmq44FtB1x7kAkP2uF"
 LABEL_DICT_FILE_ID = "1ZRxuwvSQf8ErNcGURGUaC-uwN__HOETv"
 
 # Set page config
-st.set_page_config(page_title="Face Matching System", layout="wide")
+st.set_page_config(page_title="Live Face Matching", layout="wide")
 
 # Constants
 DEFAULT_FACE_SIZE = (128, 128)
@@ -29,7 +29,7 @@ DEFAULT_HOG_PARAMS = {
 
 @st.cache_resource
 def download_from_drive(file_id, output_path):
-    """Download files from Google Drive with retries and version handling"""
+    """Download files from Google Drive with caching"""
     if not os.path.exists(output_path):
         url = f"https://drive.google.com/uc?id={file_id}"
         gdown.download(url, output_path, quiet=False)
@@ -41,7 +41,7 @@ def load_models():
     try:
         os.makedirs("temp_models", exist_ok=True)
         
-        # Download files with updated sklearn
+        # Download files
         model_path = download_from_drive(MODEL_FILE_ID, "temp_models/face_model.pkl")
         le_path = download_from_drive(LABEL_ENCODER_FILE_ID, "temp_models/label_encoder.pkl")
         label_path = download_from_drive(LABEL_DICT_FILE_ID, "temp_models/label_dict.pkl")
@@ -118,50 +118,125 @@ def main():
     
     feature_extractor = FeatureExtractor(config['hog_params'])
     
-    st.title("Face Matching System")
-    run = st.checkbox('Start Processing', True)
+    st.title("Live Face Matching System")
+    run = st.checkbox('Start Webcam', True)
     
-    # For Streamlit Cloud, we'll use file upload instead of webcam
-    uploaded_file = st.file_uploader("Upload an image", type=["jpg", "png", "jpeg"])
+    # Webcam implementation for Streamlit
+    FRAME_WINDOW = st.empty()
+    results_placeholder = st.empty()
     
-    if run and uploaded_file is not None:
-        try:
-            # Read and process uploaded image
-            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    # Try to access webcam
+    try:
+        cap = cv2.VideoCapture(0)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        
+        if not cap.isOpened():
+            st.warning("Could not access webcam directly. Trying alternative methods...")
+            # Try different camera indices
+            for i in range(3):
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    break
             
-            # Detect faces
-            face_cascade = cv2.CascadeClassifier(
-                cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+            if not cap.isOpened():
+                st.error("Failed to access any webcam. Please check permissions.")
+                return
+    
+    except Exception as e:
+        st.error(f"Webcam access error: {str(e)}")
+        return
+    
+    # Face detection
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    
+    # State variables
+    last_prob = np.zeros(len(label_dict))
+    last_face = None
+    frame_count = 0
+    
+    while run:
+        start_time = time.time()
+        
+        # Skip frames based on configuration
+        frame_count += 1
+        if frame_count % config['processing']['frame_skip'] != 0:
+            cap.grab()
+            continue
             
-            if len(faces) > 0:
-                x, y, w, h = faces[0]
-                face = img[y:y+h, x:x+w]
-                face_resized = cv2.resize(face, DEFAULT_FACE_SIZE)
+        ret, frame = cap.read()
+        if not ret:
+            st.warning("Failed to capture frame. Trying to reconnect...")
+            cap.release()
+            time.sleep(1)
+            cap = cv2.VideoCapture(0)
+            continue
+        
+        # Convert to RGB for display
+        frame_display = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Face detection
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(
+            gray, 
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(30, 30)
+        )
+        
+        if len(faces) > 0:
+            x, y, w, h = faces[0]
+            
+            # Extract face with margin
+            margin = 20
+            x1 = max(0, x - margin)
+            y1 = max(0, y - margin)
+            x2 = min(frame.shape[1], x + w + margin)
+            y2 = min(frame.shape[0], y + h + margin)
+            current_face = frame[y1:y2, x1:x2]
+            current_face_resized = cv2.resize(current_face, DEFAULT_FACE_SIZE)
+            
+            # Only process if face changed significantly
+            if (last_face is None or 
+                cv2.norm(last_face, current_face_resized) > config['processing']['min_face_change']):
+                last_face = current_face_resized
                 
-                # Extract features and predict
-                features = feature_extractor.extract(face_resized).reshape(1, -1)
-                proba = model.predict_proba(features)[0]
-                
-                # Display results
-                st.image(img_rgb, caption='Uploaded Image', use_column_width=True)
-                
-                # Show top matches
-                st.subheader("Match Percentages")
-                sorted_indices = np.argsort(-proba)
-                for i in sorted_indices[:5]:
-                    st.progress(
-                        int(proba[i]*100),
-                        text=f"{label_dict[i]}: {proba[i]*100:.1f}%"
-                    )
-            else:
-                st.warning("No faces detected in the image")
-                
-        except Exception as e:
-            st.error(f"Processing error: {str(e)}")
+                try:
+                    # Extract features and predict
+                    features = feature_extractor.extract(current_face_resized).reshape(1, -1)
+                    proba = model.predict_proba(features)[0]
+                    np.copyto(last_prob, proba)
+                    
+                    # Display results
+                    with results_placeholder.container():
+                        st.subheader("Top Matches")
+                        sorted_indices = np.argsort(-last_prob)
+                        for i in sorted_indices[:5]:
+                            st.progress(
+                                int(last_prob[i]*100),
+                                text=f"{label_dict[i]}: {last_prob[i]*100:.1f}%"
+                            )
+                except Exception as e:
+                    st.error(f"Prediction error: {str(e)}")
+            
+            # Draw on frame
+            cv2.rectangle(frame_display, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            best_idx = np.argmax(last_prob)
+            cv2.putText(
+                frame_display,
+                f"Best: {label_dict[best_idx]} ({last_prob[best_idx]*100:.1f}%)",
+                (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+            )
+        
+        # Display frame
+        FRAME_WINDOW.image(frame_display)
+        
+        # Control frame rate
+        elapsed = time.time() - start_time
+        time.sleep(max(0, 0.05 - elapsed))
+    
+    cap.release()
 
 if __name__ == "__main__":
     main()
