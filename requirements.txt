@@ -8,3 +8,4 @@ gdown
 streamlit_webrtc
 boto3
 python-dotenv
+pydrive2
