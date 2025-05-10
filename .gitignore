@@ -102,12 +102,17 @@ app.py
 Face_db.pkl
 FaceMatch.py
 video.py
+face_app0.py
+backup.py
 
 # Environment variables
 .env
 .env.*
+!.env.example
 
 # System files
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+secrets.toml
+Untitled20.ipynb
