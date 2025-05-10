@@ -10,7 +10,7 @@ from sklearn.svm import SVC
 from sklearn.preprocessing import LabelEncoder
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
-from streamlit_webrtc import webrtc_streamer, WebRTCConfiguration
+from streamlit_webrtc import webrtc_streamer, RTCConfiguration
 
 # --- Google Drive Authentication ---
 def authenticate_gdrive():
@@ -225,12 +225,12 @@ def main():
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             return av.VideoFrame.from_ndarray(img, format="bgr24")
 
+        rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+
         webrtc_streamer(
             key="example",
-            video_frame_callback=video_frame_callback,
-            rtc_configuration=WebRTCConfiguration(
-                {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-            )
+            rtc_configuration=rtc_config,  # Use RTCConfiguration
+            video_frame_callback=video_frame_callback
         )
 
 if __name__ == "__main__":
