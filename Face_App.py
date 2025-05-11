@@ -1,5 +1,4 @@
 import os
-import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
@@ -41,10 +40,10 @@ def upload_to_supabase(file_path, user_id):
         file_data = f.read()
     
     file_name = f"{user_id}.jpg"
-    res = supabase.storage.from_("profile_pics").upload(file=file_data, path=file_name, file_options={"content-type": "image/jpeg"})
+    res = supabase.storage.from_("profile-pics").upload(file=file_data, path=file_name, file_options={"content-type": "image/jpeg"})
     
     # Get public URL
-    url = supabase.storage.from_("profile_pics").get_public_url(file_name)
+    url = supabase.storage.from_("profile-pics").get_public_url(file_name)
     return url
 
 # Register new user
@@ -63,74 +62,85 @@ def register_user(username, email, image):
         os.unlink(temp_file.name)
         return False, f"Upload failed: {str(e)}"
     
-    # Load image for face encoding
-    img = DeepFace.load_image_file(temp_file.name)
-    face_locations = DeepFace.face_locations(img)
-    
-    if len(face_locations) == 0:
+    try:
+        # Face detection and encoding with DeepFace
+        img = np.array(Image.open(temp_file.name))
+        embeddings = DeepFace.represent(img_path=img, model_name='Facenet', enforce_detection=True)
+        
+        if not embeddings:
+            os.unlink(temp_file.name)
+            return False, "No face detected in the image. Please upload a clear face photo."
+            
+        face_enc = embeddings[0]['embedding']
+        
+        # Update face encodings database
+        encodings_db = load_face_encodings()
+        encodings_db['encodings'].append(face_enc)
+        encodings_db['labels'].append(user_id)
+        save_face_encodings(encodings_db)
+        
+        # Save user data to Supabase
+        user_data = {
+            'user_id': user_id,
+            'username': username,
+            'email': email,
+            'image_url': image_url,
+            'registration_date': datetime.now().isoformat(),
+            'last_login': None
+        }
+        
+        supabase.table('users').insert(user_data).execute()
+        
         os.unlink(temp_file.name)
-        return False, "No face detected in the image. Please upload a clear face photo."
-    
-    face_enc = DeepFace.face_encodings(img)[0]
-    
-    # Update face encodings database
-    encodings_db = load_face_encodings()
-    encodings_db['encodings'].append(face_enc)
-    encodings_db['labels'].append(user_id)
-    save_face_encodings(encodings_db)
-    
-    # Save user data to Supabase
-    user_data = {
-        'user_id': user_id,
-        'username': username,
-        'email': email,
-        'image_url': image_url,
-        'registration_date': datetime.now().isoformat(),
-        'last_login': None
-    }
-    
-    supabase.table('users').insert(user_data).execute()
-    
-    os.unlink(temp_file.name)
-    return True, "Registration successful!"
+        return True, "Registration successful!"
+    except Exception as e:
+        os.unlink(temp_file.name)
+        return False, f"Face processing failed: {str(e)}"
 
-# Authenticate user (same as before)
+# Authenticate user using Streamlit's camera input
 def authenticate_user():
     encodings_db = load_face_encodings()
     if not encodings_db['encodings']:
         return None, "No registered users found"
     
-    cap = cv2.VideoCapture(0)
-    st.write("Looking at the camera...")
-    image_placeholder = st.empty()
+    st.write("Please look at the camera for authentication")
+    picture = st.camera_input("Take a picture")
     
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    if picture:
+        try:
+            # Convert to numpy array
+            image = Image.open(picture)
+            img_array = np.array(image)
             
-        rgb_frame = frame[:, :, ::-1]
-        image_placeholder.image(frame, channels="BGR", use_column_width=True)
-        
-        face_locations = DeepFace.face_locations(rgb_frame)
-        
-        if face_locations:
-            face_encodings = DeepFace.face_encodings(rgb_frame, face_locations)
+            # Get face embedding
+            embeddings = DeepFace.represent(img_path=img_array, model_name='Facenet', enforce_detection=True)
             
-            for face_encoding in face_encodings:
-                matches = DeepFace.compare_faces(encodings_db['encodings'], face_encoding)
-                face_distances = DeepFace.face_distance(encodings_db['encodings'], face_encoding)
+            if not embeddings:
+                return None, "No face detected"
                 
-                best_match_index = np.argmin(face_distances)
-                if matches[best_match_index] and face_distances[best_match_index] < 0.6:
-                    user_id = encodings_db['labels'][best_match_index]
-                    cap.release()
-                    return user_id, None
+            current_encoding = embeddings[0]['embedding']
+            
+            # Compare with stored encodings
+            face_distances = []
+            for known_encoding in encodings_db['encodings']:
+                distance = np.linalg.norm(np.array(known_encoding) - np.array(current_encoding))
+                face_distances.append(distance)
+                
+            min_distance = min(face_distances)
+            best_match_index = face_distances.index(min_distance)
+            
+            if min_distance < 0.6:  # Threshold for face matching
+                user_id = encodings_db['labels'][best_match_index]
+                return user_id, None
+            else:
+                return None, "Authentication failed. No matching face found."
+                
+        except Exception as e:
+            return None, f"Authentication error: {str(e)}"
     
-    cap.release()
-    return None, "Authentication failed. No matching face found."
+    return None, "No image captured"
 
-# Streamlit UI (same as before)
+# Streamlit UI
 def main():
     st.title("Face Authentication System")
     
@@ -159,17 +169,16 @@ def main():
     
     elif choice == "Authenticate":
         st.subheader("Authenticate User")
-        if st.button("Start Face Authentication"):
-            user_id, error = authenticate_user()
-            if user_id:
-                user_data = supabase.table('users').select("*").eq('user_id', user_id).execute().data[0]
-                st.success(f"Authentication successful! Welcome {user_data['username']}")
-                st.image(user_data['image_url'], caption=user_data['username'], width=200)
-                
-                # Update last login time
-                supabase.table('users').update({'last_login': datetime.now().isoformat()}).eq('user_id', user_id).execute()
-            else:
-                st.error(error)
+        user_id, error = authenticate_user()
+        if user_id:
+            user_data = supabase.table('users').select("*").eq('user_id', user_id).execute().data[0]
+            st.success(f"Authentication successful! Welcome {user_data['username']}")
+            st.image(user_data['image_url'], caption=user_data['username'], width=200)
+            
+            # Update last login time
+            supabase.table('users').update({'last_login': datetime.now().isoformat()}).eq('user_id', user_id).execute()
+        elif error:
+            st.error(error)
     
     elif choice == "Admin":
         st.subheader("Admin Panel")

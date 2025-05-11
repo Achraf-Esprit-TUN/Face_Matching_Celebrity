@@ -6,10 +6,10 @@
 # streamlit_webrtc
 # boto3
 # pydrive2
-opencv-python-headless==4.9.0.80  # or latest version
-streamlit
-deepface
-supabase
-python-dotenv
-Pillow
-numpy
+streamlit==1.32.0
+opencv-python-headless==4.9.0.80
+deepface==0.0.89
+supabase==2.3.1
+python-dotenv==1.0.1
+Pillow==10.2.0
+numpy==1.26.4  # Pinned to avoid NumPy 2.x issues
