@@ -9,10 +9,11 @@ import uuid
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# Workaround for TensorFlow/Keras 3.x compatibility issues
+# Critical fix: Set Keras environment variables BEFORE importing DeepFace
 os.environ['TF_USE_LEGACY_KERAS'] = '1'
+os.environ['TF_KERAS'] = '1'
 
-# Now import DeepFace after setting the environment variable
+# Now import DeepFace after setting the environment variables
 from deepface import DeepFace
 
 # Load environment variables
