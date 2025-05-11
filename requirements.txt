@@ -1,14 +1,11 @@
 # streamlit
-# opencv-python-headless
-# numpy
-# Pillow
-# scikit-learn
-# git-lfs
-# gdown
-# streamlit_webrtc
-# boto3
-# python-dotenv
-# pydrive2
+opencv-python-headless
+scikit-learn
+git-lfs
+gdown
+streamlit_webrtc
+boto3
+pydrive2
 streamlit
 opencv-python
 deepface
