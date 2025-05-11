@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import streamlit as st
 from PIL import Image
-import face_recognition
+from deepface import DeepFace
 import pickle
 from datetime import datetime
 import tempfile
@@ -64,14 +64,14 @@ def register_user(username, email, image):
         return False, f"Upload failed: {str(e)}"
     
     # Load image for face encoding
-    img = face_recognition.load_image_file(temp_file.name)
-    face_locations = face_recognition.face_locations(img)
+    img = DeepFace.load_image_file(temp_file.name)
+    face_locations = DeepFace.face_locations(img)
     
     if len(face_locations) == 0:
         os.unlink(temp_file.name)
         return False, "No face detected in the image. Please upload a clear face photo."
     
-    face_enc = face_recognition.face_encodings(img)[0]
+    face_enc = DeepFace.face_encodings(img)[0]
     
     # Update face encodings database
     encodings_db = load_face_encodings()
@@ -112,14 +112,14 @@ def authenticate_user():
         rgb_frame = frame[:, :, ::-1]
         image_placeholder.image(frame, channels="BGR", use_column_width=True)
         
-        face_locations = face_recognition.face_locations(rgb_frame)
+        face_locations = DeepFace.face_locations(rgb_frame)
         
         if face_locations:
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+            face_encodings = DeepFace.face_encodings(rgb_frame, face_locations)
             
             for face_encoding in face_encodings:
-                matches = face_recognition.compare_faces(encodings_db['encodings'], face_encoding)
-                face_distances = face_recognition.face_distance(encodings_db['encodings'], face_encoding)
+                matches = DeepFace.compare_faces(encodings_db['encodings'], face_encoding)
+                face_distances = DeepFace.face_distance(encodings_db['encodings'], face_encoding)
                 
                 best_match_index = np.argmin(face_distances)
                 if matches[best_match_index] and face_distances[best_match_index] < 0.6:

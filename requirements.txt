@@ -11,8 +11,8 @@
 # pydrive2
 streamlit
 opencv-python
-face-recognition
+deepface
+supabase
 python-dotenv
 Pillow
 numpy
-supabase
