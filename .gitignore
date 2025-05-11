@@ -106,7 +106,7 @@ face_app0.py
 backup.py
 
 # Environment variables
-.env
+
 .env.*
 !.env.example
 
