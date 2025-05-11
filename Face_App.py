@@ -2,13 +2,18 @@ import os
 import numpy as np
 import streamlit as st
 from PIL import Image
-from deepface import DeepFace
 import pickle
 from datetime import datetime
 import tempfile
 import uuid
 from dotenv import load_dotenv
 from supabase import create_client, Client
+
+# Workaround for TensorFlow/Keras 3.x compatibility issues
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+
+# Now import DeepFace after setting the environment variable
+from deepface import DeepFace
 
 # Load environment variables
 load_dotenv()

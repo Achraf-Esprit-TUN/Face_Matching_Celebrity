@@ -13,5 +13,5 @@ supabase
 python-dotenv
 Pillow
 numpy
-tensorflow
+tensorflow-cpu
 tensorflow-addons
