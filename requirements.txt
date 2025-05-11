@@ -1,11 +1,18 @@
+# streamlit
+# opencv-python-headless
+# numpy
+# Pillow
+# scikit-learn
+# git-lfs
+# gdown
+# streamlit_webrtc
+# boto3
+# python-dotenv
+# pydrive2
 streamlit
-opencv-python-headless
-numpy
-Pillow
-scikit-learn
-git-lfs
-gdown
-streamlit_webrtc
-boto3
+opencv-python
+face-recognition
 python-dotenv
-pydrive2
+Pillow
+numpy
+supabase

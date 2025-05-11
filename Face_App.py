@@ -1,237 +1,189 @@
 import os
 import cv2
-import pickle
 import numpy as np
 import streamlit as st
 from PIL import Image
+import face_recognition
+import pickle
+from datetime import datetime
+import tempfile
 import uuid
-import av
-from sklearn.svm import SVC
-from sklearn.preprocessing import LabelEncoder
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
-from streamlit_webrtc import webrtc_streamer, RTCConfiguration
+from dotenv import load_dotenv
+from supabase import create_client, Client
 
-# --- Google Drive Authentication ---
-def authenticate_gdrive():
-    gauth = GoogleAuth()
-    gauth.LocalWebserverAuth()  # Opens browser for auth
-    return GoogleDrive(gauth)
+# Load environment variables
+load_dotenv()
 
-# --- Storage Manager (Google Drive) ---
-class StorageManager:
-    def __init__(self):
-        self.drive = authenticate_gdrive()
-        self.user_images_folder_id = "10YxfcJDyhbTwFD4RUSTup1-5vZZrO8Kc"  # Replace with your folder ID
-        self.models_folder_id = "1947SsF0d2vAo9p1N1PsionMagWA8drWA"  # Replace with your folder ID
+# Initialize Supabase
+url: str = os.getenv("SUPABASE_URL")
+key: str = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(url, key)
 
-    def upload_file(self, file_path, folder_id):
-        file = self.drive.CreateFile({'parents': [{'id': folder_id}]})
-        file.SetContentFile(file_path)
-        file.Upload()
-        return file['id']
+# Create directories if they don't exist
+os.makedirs('registered_faces', exist_ok=True)
+os.makedirs('face_encodings', exist_ok=True)
 
-    def download_file(self, file_id, save_path):
-        file = self.drive.CreateFile({'id': file_id})
-        file.GetContentFile(save_path)
-        return True
+# Load or initialize face encodings database
+def load_face_encodings():
+    try:
+        with open('face_encodings/encodings.pkl', 'rb') as f:
+            return pickle.load(f)
+    except (FileNotFoundError, EOFError):
+        return {'encodings': [], 'labels': []}
 
-    def list_files(self, folder_id):
-        return self.drive.ListFile({'q': f"'{folder_id}' in parents"}).GetList()
+def save_face_encodings(encodings_db):
+    with open('face_encodings/encodings.pkl', 'wb') as f:
+        pickle.dump(encodings_db, f)
 
-# --- User Manager (Pickle + Google Drive) ---
-class UserManager:
-    def __init__(self, storage):
-        self.storage = storage
-        self.users_file_id = "1HpI7viug0RPGq6ywl-LViMiC222aMMoM"  # Upload a blank `users.pkl` first
+# Upload image to Supabase Storage
+def upload_to_supabase(file_path, user_id):
+    with open(file_path, 'rb') as f:
+        file_data = f.read()
+    
+    file_name = f"{user_id}.jpg"
+    res = supabase.storage.from_("profile_pics").upload(file=file_data, path=file_name, file_options={"content-type": "image/jpeg"})
+    
+    # Get public URL
+    url = supabase.storage.from_("profile_pics").get_public_url(file_name)
+    return url
 
-    def _load_users(self):
-        try:
-            self.storage.download_file(self.users_file_id, "temp_users.pkl")
-            with open("temp_users.pkl", "rb") as f:
-                return pickle.load(f)
-        except:
-            return {}
+# Register new user
+def register_user(username, email, image):
+    # Save image temporarily
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
+    image.save(temp_file.name)
+    
+    # Generate unique user ID
+    user_id = str(uuid.uuid4())
+    
+    # Upload to Supabase
+    try:
+        image_url = upload_to_supabase(temp_file.name, user_id)
+    except Exception as e:
+        os.unlink(temp_file.name)
+        return False, f"Upload failed: {str(e)}"
+    
+    # Load image for face encoding
+    img = face_recognition.load_image_file(temp_file.name)
+    face_locations = face_recognition.face_locations(img)
+    
+    if len(face_locations) == 0:
+        os.unlink(temp_file.name)
+        return False, "No face detected in the image. Please upload a clear face photo."
+    
+    face_enc = face_recognition.face_encodings(img)[0]
+    
+    # Update face encodings database
+    encodings_db = load_face_encodings()
+    encodings_db['encodings'].append(face_enc)
+    encodings_db['labels'].append(user_id)
+    save_face_encodings(encodings_db)
+    
+    # Save user data to Supabase
+    user_data = {
+        'user_id': user_id,
+        'username': username,
+        'email': email,
+        'image_url': image_url,
+        'registration_date': datetime.now().isoformat(),
+        'last_login': None
+    }
+    
+    supabase.table('users').insert(user_data).execute()
+    
+    os.unlink(temp_file.name)
+    return True, "Registration successful!"
 
-    def _save_users(self, users):
-        with open("temp_users.pkl", "wb") as f:
-            pickle.dump(users, f)
-        self.storage.upload_file("temp_users.pkl", self.models_folder_id)
-        os.remove("temp_users.pkl")
-
-    def add_user(self, username, password, image_file):
-        users = self._load_users()
-        if username in users:
-            return False, "Username exists"
-        
-        user_id = str(uuid.uuid4())
-        users[username] = {
-            "user_id": user_id,
-            "password": password,  # Insecure! Use bcrypt in production
-            "images": []
-        }
-        self._save_users(users)
-        
-        # Save image to Google Drive
-        img_path = f"temp_{user_id}.jpg"
-        Image.open(image_file).save(img_path)
-        file_id = self.storage.upload_file(img_path, self.user_images_folder_id)
-        os.remove(img_path)
-        
-        return True, user_id
-
-    def authenticate(self, username, password):
-        users = self._load_users()
-        if username in users and users[username]["password"] == password:
-            return True, users[username]["user_id"]
-        return False, None
-
-# --- Model Training & Prediction ---
-class FaceRecognizer:
-    def __init__(self, storage):
-        self.storage = storage
-        self.model_file_id = "1L5z6dEw1WcGdd7UThgtJF9llp4JayasO"
-        self.le_file_id = "1QjDehqvrxziI35k9aCJ3Kv-pbVf5Ae_U"
-        self.label_dict_file_id = "1V7xqHmXK1EeuYKLEVn_7o2MwX-PJ6ZcM"
-
-    def train_model(self, user_manager):
-        users = user_manager._load_users()
-        X, y = [], []
-        label_dict = {}
-
-        for username, data in users.items():
-            user_id = data["user_id"]
-            files = self.storage.list_files(self.user_images_folder_id)
+# Authenticate user (same as before)
+def authenticate_user():
+    encodings_db = load_face_encodings()
+    if not encodings_db['encodings']:
+        return None, "No registered users found"
+    
+    cap = cv2.VideoCapture(0)
+    st.write("Looking at the camera...")
+    image_placeholder = st.empty()
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
             
-            for file in files:
-                if user_id in file["title"]:
-                    self.storage.download_file(file["id"], "temp_img.jpg")
-                    img = cv2.imread("temp_img.jpg")
-                    
-                    if img is not None:
-                        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                        resized = cv2.resize(gray, (128, 128))
-                        hog = cv2.HOGDescriptor((128,128), (16,16), (8,8), (8,8), 9)
-                        features = hog.compute(resized).flatten()
-                        X.append(features)
-                        y.append(user_id)
-                        label_dict[user_id] = username
-                    os.remove("temp_img.jpg")
-
-        if not X:
-            return False, "No data to train"
-
-        le = LabelEncoder()
-        y_encoded = le.fit_transform(y)
+        rgb_frame = frame[:, :, ::-1]
+        image_placeholder.image(frame, channels="BGR", use_column_width=True)
         
-        model = SVC(kernel="linear", probability=True)
-        model.fit(X, y_encoded)
-
-        # Save models
-        with open("temp_model.pkl", "wb") as f:
-            pickle.dump(model, f)
-        self.storage.upload_file("temp_model.pkl", self.models_folder_id)
-
-        with open("temp_le.pkl", "wb") as f:
-            pickle.dump(le, f)
-        self.storage.upload_file("temp_le.pkl", self.models_folder_id)
-
-        with open("temp_labels.pkl", "wb") as f:
-            pickle.dump(label_dict, f)
-        self.storage.upload_file("temp_labels.pkl", self.models_folder_id)
-
-        return True, f"Trained on {len(X)} images"
-
-    def predict_face(self, frame):
-        try:
-            # Load models
-            self.storage.download_file(self.model_file_id, "temp_model.pkl")
-            self.storage.download_file(self.le_file_id, "temp_le.pkl")
-            self.storage.download_file(self.label_dict_file_id, "temp_labels.pkl")
+        face_locations = face_recognition.face_locations(rgb_frame)
+        
+        if face_locations:
+            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
             
-            with open("temp_model.pkl", "rb") as f:
-                model = pickle.load(f)
-            with open("temp_le.pkl", "rb") as f:
-                le = pickle.load(f)
-            with open("temp_labels.pkl", "rb") as f:
-                label_dict = pickle.load(f)
+            for face_encoding in face_encodings:
+                matches = face_recognition.compare_faces(encodings_db['encodings'], face_encoding)
+                face_distances = face_recognition.face_distance(encodings_db['encodings'], face_encoding)
+                
+                best_match_index = np.argmin(face_distances)
+                if matches[best_match_index] and face_distances[best_match_index] < 0.6:
+                    user_id = encodings_db['labels'][best_match_index]
+                    cap.release()
+                    return user_id, None
+    
+    cap.release()
+    return None, "Authentication failed. No matching face found."
 
-            # Preprocess frame
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            resized = cv2.resize(gray, (128, 128))
-            hog = cv2.HOGDescriptor((128,128), (16,16), (8,8), (8,8), 9)
-            features = hog.compute(resized).reshape(1, -1)
-
-            # Predict
-            pred = model.predict(features)
-            proba = model.predict_proba(features)[0]
-            user_id = le.inverse_transform(pred)[0]
-            username = label_dict.get(user_id, "Unknown")
-
-            return username, proba.max() * 100
-        except:
-            return "Unknown", 0
-
-# --- Streamlit UI ---
+# Streamlit UI (same as before)
 def main():
-    st.set_page_config(page_title="Face Auth", layout="wide")
-    storage = StorageManager()
-    user_manager = UserManager(storage)
-    recognizer = FaceRecognizer(storage)
-
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-
-    # --- Login / Register Tabs ---
-    if not st.session_state.authenticated:
-        tab1, tab2 = st.tabs(["Login", "Register"])
-
-        with tab1:
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            if st.button("Login"):
-                success, _ = user_manager.authenticate(username, password)
-                if success:
-                    st.session_state.authenticated = True
-                    st.rerun()
-                else:
-                    st.error("Invalid credentials")
-
-        with tab2:
-            new_user = st.text_input("New Username")
-            new_pass = st.text_input("New Password", type="password")
-            user_image = st.file_uploader("Upload Face", type=["jpg", "png"])
-            
-            if st.button("Register"):
-                if new_user and new_pass and user_image:
-                    success, msg = user_manager.add_user(new_user, new_pass, user_image)
-                    if success:
-                        st.success("Registered! Please login.")
-                        recognizer.train_model(user_manager)  # Retrain model
-                    else:
-                        st.error(msg)
-                else:
-                    st.error("Fill all fields")
-
-    # --- Face Recognition (After Login) ---
-    else:
-        st.title("Face Recognition System")
+    st.title("Face Authentication System")
+    
+    menu = ["Home", "Register", "Authenticate", "Admin"]
+    choice = st.sidebar.selectbox("Menu", menu)
+    
+    if choice == "Home":
+        st.subheader("Home")
+        st.write("Welcome to the Face Authentication System")
         
-        def video_frame_callback(frame):
-            img = frame.to_ndarray(format="bgr24")
-            username, confidence = recognizer.predict_face(img)
-            
-            cv2.putText(img, f"{username} ({confidence:.1f}%)", 
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-        rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
-
-        webrtc_streamer(
-            key="example",
-            rtc_configuration=rtc_config,  # Use RTCConfiguration
-            video_frame_callback=video_frame_callback
-        )
+    elif choice == "Register":
+        st.subheader("Register New User")
+        username = st.text_input("Username")
+        email = st.text_input("Email")
+        image_file = st.file_uploader("Upload Profile Picture", type=['jpg', 'png', 'jpeg'])
+        
+        if st.button("Register"):
+            if username and email and image_file:
+                success, message = register_user(username, email, Image.open(image_file))
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
+            else:
+                st.warning("Please fill all fields")
+    
+    elif choice == "Authenticate":
+        st.subheader("Authenticate User")
+        if st.button("Start Face Authentication"):
+            user_id, error = authenticate_user()
+            if user_id:
+                user_data = supabase.table('users').select("*").eq('user_id', user_id).execute().data[0]
+                st.success(f"Authentication successful! Welcome {user_data['username']}")
+                st.image(user_data['image_url'], caption=user_data['username'], width=200)
+                
+                # Update last login time
+                supabase.table('users').update({'last_login': datetime.now().isoformat()}).eq('user_id', user_id).execute()
+            else:
+                st.error(error)
+    
+    elif choice == "Admin":
+        st.subheader("Admin Panel")
+        if st.button("View Registered Users"):
+            users = supabase.table('users').select("*").execute().data
+            if users:
+                for user in users:
+                    with st.expander(user['username']):
+                        st.write(f"Email: {user['email']}")
+                        st.write(f"Registered: {user['registration_date']}")
+                        st.write(f"Last Login: {user['last_login'] or 'Never'}")
+                        st.image(user['image_url'], width=150)
+            else:
+                st.warning("No users registered yet")
 
 if __name__ == "__main__":
     main()
