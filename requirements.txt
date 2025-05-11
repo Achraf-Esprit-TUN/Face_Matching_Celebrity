@@ -6,13 +6,12 @@
 # streamlit_webrtc
 # boto3
 # pydrive2
-streamlit
-opencv-python-headless
-deepface
-supabase
-python-dotenv
-Pillow
-numpy
-tensorflow-cpu
-tensorflow-addons
-keras
+streamlit==1.45.0
+opencv-python-headless==4.9.0.80
+deepface==0.0.89
+supabase==2.3.1
+python-dotenv==1.0.1
+Pillow==10.3.0
+numpy==1.26.4
+tensorflow==2.16.1
+keras==2.16.0

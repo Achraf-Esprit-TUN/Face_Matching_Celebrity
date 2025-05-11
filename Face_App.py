@@ -1,4 +1,9 @@
 import os
+# Set Keras environment variables BEFORE any other imports
+os.environ['TF_USE_LEGACY_KERAS'] = '1'
+os.environ['TF_KERAS'] = '1'
+
+# Now import other libraries
 import numpy as np
 import streamlit as st
 from PIL import Image
@@ -9,11 +14,7 @@ import uuid
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# Critical fix: Set Keras environment variables BEFORE importing DeepFace
-os.environ['TF_USE_LEGACY_KERAS'] = '1'
-os.environ['TF_KERAS'] = '1'
-
-# Now import DeepFace after setting the environment variables
+# Then import DeepFace
 from deepface import DeepFace
 
 # Load environment variables
