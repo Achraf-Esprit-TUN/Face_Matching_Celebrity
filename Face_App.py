@@ -65,13 +65,18 @@ def register_user(username, email, image):
     try:
         # Face detection and encoding with DeepFace
         img = np.array(Image.open(temp_file.name))
-        embeddings = DeepFace.represent(img_path=img, model_name='Facenet', enforce_detection=True)
+        embedding_objs = DeepFace.represent(
+            img_path=img,
+            model_name='Facenet',
+            enforce_detection=True,
+            detector_backend='opencv'
+        )
         
-        if not embeddings:
+        if not embedding_objs:
             os.unlink(temp_file.name)
             return False, "No face detected in the image. Please upload a clear face photo."
             
-        face_enc = embeddings[0]['embedding']
+        face_enc = embedding_objs[0]['embedding']
         
         # Update face encodings database
         encodings_db = load_face_encodings()
@@ -113,12 +118,17 @@ def authenticate_user():
             img_array = np.array(image)
             
             # Get face embedding
-            embeddings = DeepFace.represent(img_path=img_array, model_name='Facenet', enforce_detection=True)
+            embedding_objs = DeepFace.represent(
+                img_path=img_array,
+                model_name='Facenet',
+                enforce_detection=True,
+                detector_backend='opencv'
+            )
             
-            if not embeddings:
+            if not embedding_objs:
                 return None, "No face detected"
                 
-            current_encoding = embeddings[0]['embedding']
+            current_encoding = embedding_objs[0]['embedding']
             
             # Compare with stored encodings
             face_distances = []
