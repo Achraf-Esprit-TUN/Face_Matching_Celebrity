@@ -1,13 +1,13 @@
 # streamlit
-opencv-python-headless
-scikit-learn
-git-lfs
-gdown
-streamlit_webrtc
-boto3
-pydrive2
+# opencv-python-headless
+# scikit-learn
+# git-lfs
+# gdown
+# streamlit_webrtc
+# boto3
+# pydrive2
+opencv-python-headless==4.9.0.80  # or latest version
 streamlit
-opencv-python
 deepface
 supabase
 python-dotenv
