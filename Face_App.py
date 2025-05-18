@@ -10,7 +10,7 @@ from sklearn.preprocessing import LabelEncoder
 import av
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 from collections import deque
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 # Google Drive file IDs
 MODEL_FILE_ID = "16vjqOa4HxbPS3LcqjzXyQgZHZ7GWcfGe"
@@ -30,12 +30,12 @@ RTC_CONFIGURATION = RTCConfiguration(
 DEFAULT_FACE_SIZE = (160, 160)  # Increased for better feature extraction
 MIN_CONFIDENCE = 0.65  # Threshold for showing predictions
 
-@st.cache_resource(ttl=3600, show_spinner=False)  # Cache for 1 hour
+@st.cache_resource(ttl=3600, show_spinner=False)
 def download_from_drive(file_id: str, output_path: str) -> str:
     """Download files from Google Drive with caching and retries"""
     if not os.path.exists(output_path):
         url = f"https://drive.google.com/uc?id={file_id}"
-        for attempt in range(3):  # Retry up to 3 times
+        for attempt in range(3):
             try:
                 gdown.download(url, output_path, quiet=True)
                 break
@@ -47,7 +47,7 @@ def download_from_drive(file_id: str, output_path: str) -> str:
     return output_path
 
 @st.cache_resource(show_spinner="Loading models...")
-def load_models() -> Tuple[SVC, LabelEncoder, dict]:
+def load_models() -> Tuple[Optional[SVC], Optional[LabelEncoder], Optional[dict]]:
     """Load models with robust error handling"""
     try:
         os.makedirs("temp_models", exist_ok=True)
@@ -73,7 +73,6 @@ def load_models() -> Tuple[SVC, LabelEncoder, dict]:
         return model, le, label_dict
     except Exception as e:
         st.error(f"Error loading models: {str(e)}")
-        st.stop()
         return None, None, None
 
 def configuration_sidebar() -> dict:
@@ -82,11 +81,11 @@ def configuration_sidebar() -> dict:
     
     with st.sidebar.expander("Processing Settings"):
         frame_skip = st.slider("Frame Skip", 1, 5, 2, 
-                              help="Process every nth frame to reduce CPU load")
+                             help="Process every nth frame to reduce CPU load")
         min_confidence = st.slider("Confidence Threshold", 0.1, 0.99, 0.65, 0.01,
                                  help="Minimum confidence to show predictions")
         min_face_change = st.slider("Face Change Threshold", 50, 500, 150,
-                                   help="Pixel difference needed to re-process face")
+                                  help="Pixel difference needed to re-process face")
     
     return {
         'processing': {
@@ -98,14 +97,14 @@ def configuration_sidebar() -> dict:
 
 class FeatureExtractor:
     def __init__(self):
-        # Correct HOG initialization for OpenCV 4.11.0+
+        # Initialize HOG descriptor with proper parameter passing
         self.win_size = (128, 128)
         self.block_size = (32, 32)
         self.block_stride = (16, 16)
         self.cell_size = (16, 16)
         self.nbins = 9
         
-        # Initialize HOG descriptor with correct parameters
+        # Correct initialization for OpenCV 4.11.0+
         self.hog = cv2.HOGDescriptor(
             _winSize=self.win_size,
             _blockSize=self.block_size,
@@ -140,10 +139,14 @@ class VideoProcessor:
         self.config = config
         self.feature_extractor = FeatureExtractor()
         
-        # Face detection - using more accurate DNN detector
-        self.detector = cv2.FaceDetectorYN.create(
-            "face_detection_yunet_2023mar.onnx", "", (320, 320)
-        )
+        # Fallback to Haar cascade if YuNet not available
+        try:
+            self.detector = cv2.FaceDetectorYN.create(
+                "face_detection_yunet_2023mar.onnx", "", (320, 320))
+        except:
+            self.detector = None
+            self.haar_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         
         # Prediction history for smoothing
         self.pred_history = deque(maxlen=5)
@@ -151,10 +154,18 @@ class VideoProcessor:
         self.frame_count = 0
     
     def _detect_faces(self, img: np.ndarray) -> List[Tuple[int, int, int, int]]:
-        """Detect faces using YuNet DNN"""
-        self.detector.setInputSize((img.shape[1], img.shape[0]))
-        _, faces = self.detector.detect(img)
-        return faces if faces is not None else []
+        """Detect faces using available detector"""
+        if self.detector is not None:
+            # Use YuNet DNN detector
+            self.detector.setInputSize((img.shape[1], img.shape[0]))
+            _, faces = self.detector.detect(img)
+            return [tuple(map(int, face[:4])) for face in faces] if faces is not None else []
+        else:
+            # Fallback to Haar cascade
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            faces = self.haar_cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+            return [(x, y, w, h) for (x, y, w, h) in faces]
     
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         """Process video frames with optimizations"""
@@ -171,7 +182,7 @@ class VideoProcessor:
         if len(faces) > 0:
             # Get largest face
             face = max(faces, key=lambda f: f[2]*f[3])  # Sort by area
-            x, y, w, h = map(int, face[:4])
+            x, y, w, h = face
             
             # Extract face with margin
             margin = int(min(w, h) * 0.2)
@@ -214,11 +225,11 @@ class VideoProcessor:
             
             # Draw results on frame
             if 'match_results' in st.session_state and st.session_state['match_results']:
-                best_idx = np.argmax(st.session_state['match_results'][0][1])
+                best_name, best_conf = st.session_state['match_results'][0]
                 cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
                 cv2.putText(
                     img,
-                    f"{st.session_state['match_results'][0][0]}: {st.session_state['match_results'][0][1]:.1f}%",
+                    f"{best_name}: {best_conf:.1f}%",
                     (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
                 )
         
@@ -233,6 +244,10 @@ def main():
     # Load configuration and models
     config = configuration_sidebar()
     model, le, label_dict = load_models()
+    
+    if model is None or le is None or label_dict is None:
+        st.error("Failed to load required models. Please check the error message above.")
+        return
     
     st.title("🚀 Optimized Face Matching System")
     
@@ -255,8 +270,7 @@ def main():
                 "audio": False
             },
             async_processing=True,
-            sendback_audio=False,
-            desired_playing_state=True
+            sendback_audio=False
         )
     
     with col2:
@@ -296,10 +310,6 @@ def main():
             if webrtc_ctx:
                 st.metric("Stream Status", "Active" if webrtc_ctx.state.playing else "Inactive")
             st.metric("Model Classes", len(label_dict))
-            
-            # Placeholder for performance stats
-            if 'processing_time' in st.session_state:
-                st.metric("Processing Time", f"{st.session_state['processing_time']:.2f}ms")
 
 if __name__ == "__main__":
     # Add warning suppression
