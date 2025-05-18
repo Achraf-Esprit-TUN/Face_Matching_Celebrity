@@ -73,19 +73,13 @@ class FeatureExtractor:
             HOG_PARAMS['cell_size'],
             HOG_PARAMS['nbins']
         )
-        self.last_face = None
-        self.last_features = None
 
     def extract(self, face_img):
         """Extract HOG features from face image"""
         try:
-            # Convert to grayscale and resize
             gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
             resized = cv2.resize(gray, HOG_PARAMS['win_size'])
-            
-            # Compute HOG features
-            features = self.hog.compute(resized).flatten()
-            return features
+            return self.hog.compute(resized).flatten()
         except Exception as e:
             print(f"Feature extraction error: {e}")
             return None
@@ -98,18 +92,24 @@ class VideoProcessor:
         self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         self.last_predictions = []
+        self.frame_count = 0
 
     def process_frame(self, frame):
         img = frame.to_ndarray(format="bgr24")
+        predictions = []
         
+        # Skip every other frame for performance
+        self.frame_count += 1
+        if self.frame_count % 2 != 0:
+            return img, predictions
+
         # Face detection
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         faces = self.face_cascade.detectMultiScale(
             gray, 
             scaleFactor=1.1, 
             minNeighbors=5, 
-            minSize=(100, 100),
-            flags=cv2.CASCADE_SCALE_IMAGE
+            minSize=(100, 100)
         )
 
         if len(faces) > 0:
@@ -134,25 +134,24 @@ class VideoProcessor:
                 # Make prediction
                 proba = self.model.predict_proba(features.reshape(1, -1))[0]
                 sorted_indices = np.argsort(-proba)
-                self.last_predictions = [
+                predictions = [
                     (self.label_dict[i], proba[i]*100) 
                     for i in sorted_indices[:5]  # Top 5 predictions
                 ]
 
                 # Draw face rectangle and top prediction
                 cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                if self.last_predictions:
-                    top_name, top_conf = self.last_predictions[0]
+                if predictions:
+                    top_name, top_conf = predictions[0]
                     cv2.putText(img, f"{top_name}: {top_conf:.1f}%",
                               (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
                               (0, 255, 0), 2)
 
-        return img, self.last_predictions
+        return img, predictions
 
     def recv(self, frame):
         processed_frame, predictions = self.process_frame(frame)
-        if predictions:
-            st.session_state.predictions = predictions
+        st.session_state.predictions = predictions  # Update session state
         return av.VideoFrame.from_ndarray(processed_frame, format="bgr24")
 
 def main():
@@ -187,17 +186,20 @@ def main():
 
     with col2:
         st.markdown("### Top Matches")
-        if not ctx or not ctx.state.playing:
-            st.info("Waiting for camera feed...")
-        else:
+        results_placeholder = st.empty()
+        
+        if ctx and ctx.state.playing:
             if st.session_state.predictions:
-                for i, (name, confidence) in enumerate(st.session_state.predictions):
-                    st.markdown(f"**{i+1}. {name}**")
-                    st.progress(confidence/100)
-                    st.markdown(f"`{confidence:.1f}% Similarity`")
-                    st.write("---")
+                with results_placeholder.container():
+                    for i, (name, confidence) in enumerate(st.session_state.predictions):
+                        st.markdown(f"**{i+1}. {name}**")
+                        st.progress(confidence/100)
+                        st.markdown(f"`{confidence:.1f}% Similarity`")
+                        st.write("---")
             else:
-                st.warning("No faces detected - make sure your face is visible!")
+                results_placeholder.warning("Align your face in the camera...")
+        else:
+            results_placeholder.info("Starting camera feed...")
 
     # Footer
     st.markdown("---")
