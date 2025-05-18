@@ -93,7 +93,10 @@ class VideoProcessor:
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         self.last_predictions = []
         self.frame_count = 0
-        self.prediction_updated = False
+        
+        # Initialize session state if needed
+        if 'predictions' not in st.session_state:
+            st.session_state['predictions'] = []
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -137,8 +140,8 @@ class VideoProcessor:
                         for i in sorted_indices[:5]  # Top 5 predictions
                     ]
                     
-                    # Update session state directly
-                    st.session_state.predictions = predictions
+                    # Update session state using dictionary syntax
+                    st.session_state['predictions'] = predictions
                     
                     # Draw face rectangle and top prediction
                     cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
@@ -151,9 +154,9 @@ class VideoProcessor:
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 def main():
-    # Initialize session state
+    # Initialize session state using dictionary syntax
     if 'predictions' not in st.session_state:
-        st.session_state.predictions = []
+        st.session_state['predictions'] = []
     
     # Load models
     model, label_dict = download_and_load_models()
@@ -184,8 +187,8 @@ def main():
         st.markdown("### Top Matches")
         results_placeholder = st.empty()
         
-        # Get predictions from session state
-        predictions = st.session_state.predictions
+        # Get predictions from session state using dictionary syntax
+        predictions = st.session_state.get('predictions', [])
         
         # Add debug info
         st.write(f"Face detected: {len(predictions) > 0}")
