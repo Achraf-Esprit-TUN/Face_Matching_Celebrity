@@ -266,13 +266,8 @@ def main():
             else:
                 st.warning("No faces detected")
 
+# Remove the async loop handling at the bottom and replace with:
 if __name__ == "__main__":
     import warnings
     warnings.filterwarnings("ignore", category=UserWarning)
-    
-    # Add async loop handling
-    import asyncio
-    try:
-        asyncio.get_event_loop().run_until_complete(main())
-    except RuntimeError:
-        asyncio.new_event_loop().run_until_complete(main())
+    main()  # Just call main directly
