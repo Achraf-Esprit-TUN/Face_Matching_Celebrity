@@ -80,7 +80,7 @@ pylint-global.txt
 *.tmp
 
 # Streamlit cache
-.streamlit/
+# .streamlit/
 
 # Images or data files
 *.jpg
@@ -117,3 +117,4 @@ Desktop.ini
 secrets.toml
 Untitled20.ipynb
 suppabase.py
+last_backup.py
