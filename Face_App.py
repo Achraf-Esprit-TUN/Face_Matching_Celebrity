@@ -97,16 +97,23 @@ def configuration_sidebar() -> dict:
     }
 
 class FeatureExtractor:
-    """Optimized feature extraction with caching"""
     def __init__(self):
-        # Enhanced HOG parameters
+        # Correct HOG initialization for OpenCV 4.11.0+
+        self.win_size = (128, 128)
+        self.block_size = (32, 32)
+        self.block_stride = (16, 16)
+        self.cell_size = (16, 16)
+        self.nbins = 9
+        
+        # Initialize HOG descriptor with correct parameters
         self.hog = cv2.HOGDescriptor(
-            winSize=(128, 128),
-            blockSize=(32, 32),
-            blockStride=(16, 16),
-            cellSize=(16, 16),
-            nbins=9
+            _winSize=self.win_size,
+            _blockSize=self.block_size,
+            _blockStride=self.block_stride,
+            _cellSize=self.cell_size,
+            _nbins=self.nbins
         )
+        
         self._last_face = None
         self._last_features = None
     
@@ -116,7 +123,7 @@ class FeatureExtractor:
             return self._last_features
             
         gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
-        resized = cv2.resize(gray, self.hog.winSize)
+        resized = cv2.resize(gray, self.win_size)
         features = self.hog.compute(resized).flatten()
         
         # Cache results
