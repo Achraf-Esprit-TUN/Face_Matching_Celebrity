@@ -19,10 +19,19 @@ LABEL_DICT_FILE_ID = "1ZRxuwvSQf8ErNcGURGUaC-uwN__HOETv"
 # Set page config
 st.set_page_config(page_title="Live Face Matching", layout="wide")
 
-# WebRTC Configuration
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-)
+# WebRTC Configuration with fallback TURN servers
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:global.stun.twilio.com:3478"]},
+        {
+            "urls": "turn:global.turn.twilio.com:3478?transport=udp",
+            "username": "YOUR_TURN_USERNAME",
+            "credential": "YOUR_TURN_CREDENTIAL"
+        }
+    ],
+    "iceTransportPolicy": "all"  # Try both relay and host candidates
+})
 
 # Constants
 DEFAULT_FACE_SIZE = (128, 128)
@@ -48,17 +57,14 @@ def load_models():
     try:
         os.makedirs("temp_models", exist_ok=True)
         
-        # Download files
         model_path = download_from_drive(MODEL_FILE_ID, "temp_models/face_model.pkl")
         le_path = download_from_drive(LABEL_ENCODER_FILE_ID, "temp_models/label_encoder.pkl")
         label_path = download_from_drive(LABEL_DICT_FILE_ID, "temp_models/label_dict.pkl")
         
-        # Suppress version warnings
         import warnings
         from sklearn.exceptions import InconsistentVersionWarning
         warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
         
-        # Load files
         with open(model_path, 'rb') as f:
             model = pickle.load(f)
         with open(le_path, 'rb') as f:
@@ -109,7 +115,6 @@ class FeatureExtractor:
             resized = cv2.resize(gray, self.hog.winSize)
             features = self.hog.compute(resized).flatten()
             
-            # Cache results
             self._last_face = face.copy()
             self._last_features = features
             return features
@@ -127,88 +132,81 @@ class VideoProcessor:
         self.last_face = None
         self.frame_count = 0
         
-        # Load face detector
         self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         
-        # Prediction history for smoothing
         self.pred_history = deque(maxlen=3)
     
     def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        
-        # Skip frames based on configuration
-        self.frame_count += 1
-        if self.frame_count % self.config['processing']['frame_skip'] != 0:
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
-        
-        # Face detection
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(
-            gray, 
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(80, 80),  # Increased minimum size for better accuracy
-            flags=cv2.CASCADE_SCALE_IMAGE
-        )
-        
-        if len(faces) > 0:
-            x, y, w, h = faces[0]  # Get largest face
+        try:
+            img = frame.to_ndarray(format="bgr24")
             
-            # Extract face with dynamic margin
-            margin = int(min(w, h) * 0.2)
-            x1 = max(0, x - margin)
-            y1 = max(0, y - margin)
-            x2 = min(img.shape[1], x + w + margin)
-            y2 = min(img.shape[0], y + h + margin)
-            current_face = img[y1:y2, x1:x2]
-            
-            if current_face.size == 0:
+            self.frame_count += 1
+            if self.frame_count % self.config['processing']['frame_skip'] != 0:
                 return av.VideoFrame.from_ndarray(img, format="bgr24")
             
-            current_face_resized = cv2.resize(current_face, DEFAULT_FACE_SIZE)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(
+                gray, 
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(80, 80),
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
             
-            # Only process if face changed significantly
-            if (self.last_face is None or 
-                cv2.norm(self.last_face, current_face_resized) > self.config['processing']['min_face_change']):
+            if len(faces) > 0:
+                x, y, w, h = faces[0]
                 
-                self.last_face = current_face_resized.copy()
+                margin = int(min(w, h) * 0.2)
+                x1 = max(0, x - margin)
+                y1 = max(0, y - margin)
+                x2 = min(img.shape[1], x + w + margin)
+                y2 = min(img.shape[0], y + h + margin)
+                current_face = img[y1:y2, x1:x2]
                 
-                try:
-                    # Extract features and predict
-                    features = self.feature_extractor.extract(current_face_resized)
-                    if features is not None:
-                        proba = self.model.predict_proba(features.reshape(1, -1))[0]
-                        self.pred_history.append(proba)
-                        
-                        # Average predictions over history
-                        current_pred = np.mean(self.pred_history, axis=0)
-                        
-                        # Get sorted results
-                        sorted_indices = np.argsort(-current_pred)
-                        sorted_results = [
-                            (self.label_dict[i], current_pred[i]*100) 
-                            for i in sorted_indices
-                        ]
-                        st.session_state['match_results'] = sorted_results
-                        
-                except Exception as e:
-                    print(f"Prediction error: {str(e)}")
+                if current_face.size == 0:
+                    return av.VideoFrame.from_ndarray(img, format="bgr24")
+                
+                current_face_resized = cv2.resize(current_face, DEFAULT_FACE_SIZE)
+                
+                if (self.last_face is None or 
+                    cv2.norm(self.last_face, current_face_resized) > self.config['processing']['min_face_change']):
+                    
+                    self.last_face = current_face_resized.copy()
+                    
+                    try:
+                        features = self.feature_extractor.extract(current_face_resized)
+                        if features is not None:
+                            proba = self.model.predict_proba(features.reshape(1, -1))[0]
+                            self.pred_history.append(proba)
+                            
+                            current_pred = np.mean(self.pred_history, axis=0)
+                            
+                            sorted_indices = np.argsort(-current_pred)
+                            sorted_results = [
+                                (self.label_dict[i], current_pred[i]*100) 
+                                for i in sorted_indices
+                            ]
+                            st.session_state['match_results'] = sorted_results
+                            
+                    except Exception as e:
+                        print(f"Prediction error: {str(e)}")
+                
+                if self.pred_history:
+                    best_idx = np.argmax(current_pred)
+                    cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    cv2.putText(
+                        img,
+                        f"{self.label_dict[best_idx]}: {current_pred[best_idx]*100:.1f}%",
+                        (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+                    )
             
-            # Draw results on frame
-            if self.pred_history:
-                best_idx = np.argmax(current_pred)
-                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                cv2.putText(
-                    img,
-                    f"{self.label_dict[best_idx]}: {current_pred[best_idx]*100:.1f}%",
-                    (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
-                )
-        
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+        except Exception as e:
+            print(f"Frame processing error: {str(e)}")
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 def main():
-    # Load configuration and models
     config = configuration_sidebar()
     model, le, label_dict = load_models()
     
@@ -216,26 +214,20 @@ def main():
         st.error("Failed to load models. Please check your internet connection.")
         return
     
-    # Initialize feature extractor
     feature_extractor = FeatureExtractor(DEFAULT_HOG_PARAMS)
     
     st.title("Live Face Matching System")
     
-    # Debug info
     with st.sidebar.expander("System Info"):
         st.write(f"Model type: {type(model).__name__}")
         st.write(f"Number of classes: {len(label_dict)}")
-        st.write(f"Frame skip: {config['processing']['frame_skip']}")
     
-    # Initialize session state for results
     if 'match_results' not in st.session_state:
         st.session_state['match_results'] = []
     
-    # Create layout
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        # WebRTC streamer with optimized settings
         webrtc_ctx = webrtc_streamer(
             key="example",
             mode=WebRtcMode.SENDRECV,
@@ -244,7 +236,7 @@ def main():
                 model, le, label_dict, feature_extractor, config
             ),
             media_stream_constraints={
-                "video": {"width": 640, "height": 480},  # Fixed resolution
+                "video": {"width": 640, "height": 480},
                 "audio": False
             },
             async_processing=True,
@@ -275,8 +267,12 @@ def main():
                 st.warning("No faces detected")
 
 if __name__ == "__main__":
-    # Add warning suppression
     import warnings
     warnings.filterwarnings("ignore", category=UserWarning)
     
-    main()
+    # Add async loop handling
+    import asyncio
+    try:
+        asyncio.get_event_loop().run_until_complete(main())
+    except RuntimeError:
+        asyncio.new_event_loop().run_until_complete(main())
