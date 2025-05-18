@@ -151,6 +151,10 @@ class VideoProcessor:
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 def main():
+    # Initialize session state
+    if 'predictions' not in st.session_state:
+        st.session_state.predictions = []
+    
     # Load models
     model, label_dict = download_and_load_models()
     if model is None or label_dict is None:
