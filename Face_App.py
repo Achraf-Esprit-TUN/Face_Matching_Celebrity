@@ -183,26 +183,7 @@ def main():
             async_processing=True,
         )
 
-    with col2:
-        st.markdown("### Top Matches")
-        results_placeholder = st.empty()
-        
-        # Get predictions from session state using dictionary syntax
-        predictions = st.session_state.get('predictions', [])
-        
-        # Add debug info
-        st.write(f"Face detected: {len(predictions) > 0}")
-        
-        if len(predictions) > 0:
-            with results_placeholder.container():
-                for i, (name, confidence) in enumerate(predictions):
-                    st.markdown(f"**{i+1}. {name}**")
-                    st.progress(confidence/100)
-                    st.markdown(f"`{confidence:.1f}% Similarity`")
-                    st.write("---")
-        else:
-            results_placeholder.warning("Align your face in the camera...")
-
+    
     # Footer
     st.markdown("---")
     st.markdown("*Using Haar cascades for face detection and HOG+SVM for recognition*")
