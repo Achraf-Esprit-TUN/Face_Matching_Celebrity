@@ -20,13 +20,11 @@ LABEL_DICT_FILE_ID = "1ZRxuwvSQf8ErNcGURGUaC-uwN__HOETv"
 # Set page config
 st.set_page_config(page_title="Live Face Matching", layout="wide")
 
-# WebRTC Configuration (Updated with multiple STUN servers)
+# WebRTC Configuration
 RTC_CONFIGURATION = RTCConfiguration({
     "iceServers": [
         {"urls": ["stun:stun.l.google.com:19302"]},
         {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]},
-        {"urls": ["stun:stun3.l.google.com:19302"]}
     ]
 })
 
@@ -81,11 +79,11 @@ def configuration_sidebar() -> dict:
     st.sidebar.title("Settings")
     
     with st.sidebar.expander("Processing Settings"):
-        frame_skip = st.slider("Frame Skip", 1, 5, 2, 
+        frame_skip = st.slider("Frame Skip", 1, 5, 1,
                              help="Process every nth frame to reduce CPU load")
         min_confidence = st.slider("Confidence Threshold", 0.1, 0.99, 0.65, 0.01,
                                  help="Minimum confidence to show predictions")
-        min_face_change = st.slider("Face Change Threshold", 50, 500, 150,
+        min_face_change = st.slider("Face Change Threshold", 50, 500, 100,
                                   help="Pixel difference needed to re-process face")
     
     return {
@@ -121,17 +119,20 @@ class FeatureExtractor:
         if self._last_face is not None and cv2.norm(face, self._last_face) < 5:
             return self._last_features
             
-        gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
-        resized = cv2.resize(gray, self.win_size)
-        features = self.hog.compute(resized).flatten()
-        
-        self._last_face = face.copy()
-        self._last_features = features
-        
-        return features
+        try:
+            gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY)
+            resized = cv2.resize(gray, self.win_size)
+            features = self.hog.compute(resized).flatten()
+            
+            self._last_face = face.copy()
+            self._last_features = features
+            return features
+        except Exception as e:
+            print(f"Feature extraction error: {str(e)}")
+            return np.array([])
 
 class VideoProcessor:
-    """Video processor with face detection and recognition"""
+    """Video processor with improved face detection handling"""
     def __init__(self, model, le, label_dict, config):
         self.model = model
         self.label_dict = label_dict
@@ -146,71 +147,91 @@ class VideoProcessor:
         self.frame_count = 0
     
     def _detect_faces(self, img: np.ndarray) -> List[Tuple[int, int, int, int]]:
-        """Detect faces using Haar cascade"""
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(
-            gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-        return [(x, y, w, h) for (x, y, w, h) in faces]
-    
+        """Detect faces using Haar cascade with optimized parameters"""
+        try:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(
+                gray, 
+                scaleFactor=1.2,  # Increased scale factor
+                minNeighbors=6,    # More neighbors for better accuracy
+                minSize=(80, 80),  # Larger minimum size
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+            return [(x, y, w, h) for (x, y, w, h) in faces]
+        except Exception as e:
+            print(f"Face detection error: {str(e)}")
+            return []
+
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        """Process video frames"""
-        img = frame.to_ndarray(format="bgr24")
-        
-        self.frame_count += 1
-        if self.frame_count % self.config['processing']['frame_skip'] != 0:
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
-        
-        faces = self._detect_faces(img)
-        
-        if len(faces) > 0:
-            x, y, w, h = max(faces, key=lambda f: f[2]*f[3])
+        """Process video frames with error handling"""
+        try:
+            img = frame.to_ndarray(format="bgr24")
             
-            margin = 20
-            x1 = max(0, x - margin)
-            y1 = max(0, y - margin)
-            x2 = min(img.shape[1], x + w + margin)
-            y2 = min(img.shape[0], y + h + margin)
-            current_face = img[y1:y2, x1:x2]
-            current_face_resized = cv2.resize(current_face, DEFAULT_FACE_SIZE)
+            self.frame_count += 1
+            if self.frame_count % self.config['processing']['frame_skip'] != 0:
+                return av.VideoFrame.from_ndarray(img, format="bgr24")
             
-            if (self.last_face is None or 
-                cv2.norm(self.last_face, current_face_resized) > 
-                self.config['processing']['min_face_change']):
+            faces = self._detect_faces(img)
+            
+            if len(faces) > 0:
+                x, y, w, h = max(faces, key=lambda f: f[2]*f[3])
                 
-                self.last_face = current_face_resized
+                margin = 40  # Increased margin
+                x1 = max(0, x - margin)
+                y1 = max(0, y - margin)
+                x2 = min(img.shape[1], x + w + margin)
+                y2 = min(img.shape[0], y + h + margin)
+                current_face = img[y1:y2, x1:x2]
                 
-                try:
-                    features = self.feature_extractor.extract(current_face_resized)
-                    proba = self.model.predict_proba(features.reshape(1, -1))[0]
+                if current_face.size == 0:
+                    return av.VideoFrame.from_ndarray(img, format="bgr24")
+                
+                current_face_resized = cv2.resize(current_face, DEFAULT_FACE_SIZE)
+                
+                if (self.last_face is None or 
+                    cv2.norm(self.last_face, current_face_resized) > 
+                    self.config['processing']['min_face_change']):
                     
-                    if proba.max() >= self.config['processing']['min_confidence']:
-                        self.pred_history.append(proba)
-                        current_pred = np.mean(self.pred_history, axis=0) if self.pred_history else proba
+                    self.last_face = current_face_resized.copy()
+                    
+                    features = self.feature_extractor.extract(current_face_resized)
+                    if features.size == 0:
+                        return av.VideoFrame.from_ndarray(img, format="bgr24")
+                    
+                    try:
+                        proba = self.model.predict_proba(features.reshape(1, -1))[0]
                         
-                        sorted_indices = np.argsort(-current_pred)
-                        sorted_results = [
-                            (self.label_dict[i], current_pred[i]*100) 
-                            for i in sorted_indices
-                        ]
-                        
-                        st.session_state['match_results'] = sorted_results
+                        if proba.max() >= self.config['processing']['min_confidence']:
+                            self.pred_history.append(proba)
+                            current_pred = np.mean(self.pred_history, axis=0) if self.pred_history else proba
+                            
+                            sorted_indices = np.argsort(-current_pred)
+                            sorted_results = [
+                                (self.label_dict[i], current_pred[i]*100) 
+                                for i in sorted_indices
+                            ]
+                            
+                            st.session_state['match_results'] = sorted_results
+                    
+                    except Exception as e:
+                        print(f"Prediction error: {str(e)}")
                 
-                except Exception as e:
-                    print(f"Prediction error: {str(e)}")
+                if 'match_results' in st.session_state and st.session_state['match_results']:
+                    best_name, best_conf = st.session_state['match_results'][0]
+                    cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    cv2.putText(
+                        img,
+                        f"{best_name}: {best_conf:.1f}%",
+                        (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+                    )
             
-            if 'match_results' in st.session_state and st.session_state['match_results']:
-                best_name, best_conf = st.session_state['match_results'][0]
-                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                cv2.putText(
-                    img,
-                    f"{best_name}: {best_conf:.1f}%",
-                    (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
-                )
-        
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+        except Exception as e:
+            print(f"Frame processing error: {str(e)}")
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 def main():
-    """Main application"""
+    """Main application with better error handling"""
     if 'match_results' not in st.session_state:
         st.session_state['match_results'] = []
     
@@ -230,12 +251,20 @@ def main():
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
             video_processor_factory=lambda: VideoProcessor(model, le, label_dict, config),
-            media_stream_constraints={"video": True, "audio": False},
+            media_stream_constraints={
+                "video": {
+                    "width": {"ideal": 640},
+                    "height": {"ideal": 480},
+                    "frameRate": {"ideal": 15}
+                },
+                "audio": False
+            },
             async_processing=True,
             video_html_attrs={
                 "style": {"width": "100%"},
                 "autoPlay": True,
-                "muted": True
+                "muted": True,
+                "playsinline": True
             }
         )
     
