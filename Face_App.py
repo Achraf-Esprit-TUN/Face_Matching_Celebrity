@@ -101,7 +101,7 @@ class VideoProcessor:
         # Skip every other frame for performance
         self.frame_count += 1
         if self.frame_count % 2 != 0:
-            return img, predictions
+            return img, self.last_predictions  # Return last predictions instead of empty list
 
         # Face detection
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -147,6 +147,9 @@ class VideoProcessor:
                               (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
                               (0, 255, 0), 2)
 
+            # Store last predictions for frames we skip
+            self.last_predictions = predictions
+
         return img, predictions
 
     def recv(self, frame):
@@ -189,6 +192,9 @@ def main():
         results_placeholder = st.empty()
         
         if ctx and ctx.state.playing:
+            # Add debug info
+            st.write(f"Face detected: {len(st.session_state.predictions) > 0}")
+            
             if st.session_state.predictions:
                 with results_placeholder.container():
                     for i, (name, confidence) in enumerate(st.session_state.predictions):
