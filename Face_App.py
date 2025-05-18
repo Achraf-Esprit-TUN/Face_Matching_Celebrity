@@ -252,14 +252,19 @@ def main():
             async_processing=True,
         )
     
-        with col2:
-            # Results display container
-            st.subheader("Top 5 Matches")
-            if webrtc_ctx and webrtc_ctx.state.playing and 'match_results' in st.session_state:
-                results = st.session_state.get('match_results', [])
-                if results:
-                    for i, (name, confidence) in enumerate(results[:5]):
-                        cols = st.columns([3, 2, 5])
+    with col2:
+        # Results display container
+        st.subheader("Top 5 Matches")
+        if webrtc_ctx and webrtc_ctx.state.playing and 'match_results' in st.session_state:
+            results = st.session_state.get('match_results', [])
+            if results:
+                for i, (name, confidence) in enumerate(results[:5]):
+                    cols = st.columns([3, 2, 5])
+                    cols[0].write(f"{i+1}. {name}")
+                    cols[1].write(f"{confidence:.1f}%")
+                    cols[2].progress(confidence / 100)
+                    
+
 
             
             
