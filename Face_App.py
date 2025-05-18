@@ -154,7 +154,9 @@ class VideoProcessor:
 
     def recv(self, frame):
         processed_frame, predictions = self.process_frame(frame)
-        st.session_state.predictions = predictions  # Update session state
+        # Update session state with predictions
+        if len(predictions) > 0:
+            st.session_state.predictions = predictions
         return av.VideoFrame.from_ndarray(processed_frame, format="bgr24")
 
 def main():
@@ -192,12 +194,15 @@ def main():
         results_placeholder = st.empty()
         
         if ctx and ctx.state.playing:
-            # Add debug info
-            st.write(f"Face detected: {len(st.session_state.predictions) > 0}")
+            # Get predictions from session state
+            predictions = st.session_state.get('predictions', [])
             
-            if st.session_state.predictions:
+            # Add debug info
+            st.write(f"Face detected: {len(predictions) > 0}")
+            
+            if len(predictions) > 0:
                 with results_placeholder.container():
-                    for i, (name, confidence) in enumerate(st.session_state.predictions):
+                    for i, (name, confidence) in enumerate(predictions):
                         st.markdown(f"**{i+1}. {name}**")
                         st.progress(confidence/100)
                         st.markdown(f"`{confidence:.1f}% Similarity`")
