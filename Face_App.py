@@ -93,15 +93,15 @@ class VideoProcessor:
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         self.last_predictions = []
         self.frame_count = 0
+        self.prediction_updated = False
 
-    def process_frame(self, frame):
+    def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        predictions = []
         
         # Skip every other frame for performance
         self.frame_count += 1
         if self.frame_count % 2 != 0:
-            return img, self.last_predictions  # Return last predictions instead of empty list
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
 
         # Face detection
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -123,51 +123,38 @@ class VideoProcessor:
             y2 = min(img.shape[0], y + h + margin)
             face_roi = img[y1:y2, x1:x2]
             
-            if face_roi.size == 0:
-                return img, []
+            if face_roi.size > 0:
+                # Resize and extract features
+                face_resized = cv2.resize(face_roi, DEFAULT_FACE_SIZE)
+                features = self.feature_extractor.extract(face_resized)
+                
+                if features is not None:
+                    # Make prediction
+                    proba = self.model.predict_proba(features.reshape(1, -1))[0]
+                    sorted_indices = np.argsort(-proba)
+                    predictions = [
+                        (self.label_dict[i], proba[i]*100) 
+                        for i in sorted_indices[:5]  # Top 5 predictions
+                    ]
+                    
+                    # Update session state directly
+                    st.session_state.predictions = predictions
+                    
+                    # Draw face rectangle and top prediction
+                    cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    if predictions:
+                        top_name, top_conf = predictions[0]
+                        cv2.putText(img, f"{top_name}: {top_conf:.1f}%",
+                                  (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
+                                  (0, 255, 0), 2)
 
-            # Resize and extract features
-            face_resized = cv2.resize(face_roi, DEFAULT_FACE_SIZE)
-            features = self.feature_extractor.extract(face_resized)
-            
-            if features is not None:
-                # Make prediction
-                proba = self.model.predict_proba(features.reshape(1, -1))[0]
-                sorted_indices = np.argsort(-proba)
-                predictions = [
-                    (self.label_dict[i], proba[i]*100) 
-                    for i in sorted_indices[:5]  # Top 5 predictions
-                ]
-
-                # Draw face rectangle and top prediction
-                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                if predictions:
-                    top_name, top_conf = predictions[0]
-                    cv2.putText(img, f"{top_name}: {top_conf:.1f}%",
-                              (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 
-                              (0, 255, 0), 2)
-
-            # Store last predictions for frames we skip
-            self.last_predictions = predictions
-
-        return img, predictions
-
-    def recv(self, frame):
-        processed_frame, predictions = self.process_frame(frame)
-        # Update session state with predictions
-        if len(predictions) > 0:
-            st.session_state.predictions = predictions
-        return av.VideoFrame.from_ndarray(processed_frame, format="bgr24")
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 def main():
     # Load models
     model, label_dict = download_and_load_models()
     if model is None or label_dict is None:
         return
-
-    # Initialize session state
-    if 'predictions' not in st.session_state:
-        st.session_state.predictions = []
 
     # App layout
     st.title("Celebrity Lookalike Analyzer")
@@ -193,24 +180,21 @@ def main():
         st.markdown("### Top Matches")
         results_placeholder = st.empty()
         
-        if ctx and ctx.state.playing:
-            # Get predictions from session state
-            predictions = st.session_state.get('predictions', [])
-            
-            # Add debug info
-            st.write(f"Face detected: {len(predictions) > 0}")
-            
-            if len(predictions) > 0:
-                with results_placeholder.container():
-                    for i, (name, confidence) in enumerate(predictions):
-                        st.markdown(f"**{i+1}. {name}**")
-                        st.progress(confidence/100)
-                        st.markdown(f"`{confidence:.1f}% Similarity`")
-                        st.write("---")
-            else:
-                results_placeholder.warning("Align your face in the camera...")
+        # Get predictions from session state
+        predictions = st.session_state.predictions
+        
+        # Add debug info
+        st.write(f"Face detected: {len(predictions) > 0}")
+        
+        if len(predictions) > 0:
+            with results_placeholder.container():
+                for i, (name, confidence) in enumerate(predictions):
+                    st.markdown(f"**{i+1}. {name}**")
+                    st.progress(confidence/100)
+                    st.markdown(f"`{confidence:.1f}% Similarity`")
+                    st.write("---")
         else:
-            results_placeholder.info("Starting camera feed...")
+            results_placeholder.warning("Align your face in the camera...")
 
     # Footer
     st.markdown("---")
